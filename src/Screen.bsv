@@ -6,6 +6,15 @@ import Ehr :: *;
 
 import BRAMCore :: *;
 
+`ifdef BSIM
+import "BDPI" function Action initRaylib();
+import "BDPI" function Action beginDrawRaylib();
+import "BDPI" function Bool mustExitRaylib();
+import "BDPI" function Action exitRaylib();
+import "BDPI" function Action
+  drawRaylibPoint(Bit#(32) x, Bit#(32) y, Bit#(8) r, Bit#(8) g, Bit#(8) b);
+`endif
+
 typedef struct {
   Bit#(8) r;
   Bit#(8) g;
@@ -15,9 +24,9 @@ typedef struct {
 function Color rgb(Bit#(8) r, Bit#(8) g, Bit#(8) b) = Color{r:r, g:g, b:b};
 
 function Color multRgb(Color c1, Color c2);
-  Bit#(16) r = 0;
-  Bit#(16) g = 0;
-  Bit#(16) b = 0;
+  Bit#(16) r = 0;//zeroExtend(c1.r)*zeroExtend(c2.r);//0;
+  Bit#(16) g = 0;//zeroExtend(c1.g)*zeroExtend(c2.g);//0;
+  Bit#(16) b = 0;//zeroExtend(c1.b)*zeroExtend(c2.b);//0;
 
   for (Integer i=0; i < 8; i = i + 1) begin
     r = r + (c1.r[i] == 1 ? zeroExtend(c2.r) << i : 0);
@@ -41,7 +50,7 @@ endinstance
 instance Arith#(Color);
   function Color \+ (Color v1, Color v2) = rgb(v1.r + v2.r, v1.g + v2.g, v1.b + v2.b);
   function Color \- (Color v1, Color v2) = rgb(v1.r - v2.r, v1.g - v2.g, v1.b - v2.b);
-  function Color \* (Color v1, Color v2) = rgb(v1.r * v2.r, v1.g * v2.g, v1.b * v2.b);
+  function Color \* (Color v1, Color v2) = multRgb(v1,v2);
   function Color \/ (Color v1, Color v2) = rgb(v1.r / v2.r, v1.g / v2.g, v1.b / v2.b);
   function Color \% (Color v1, Color v2) = error("% is undefined for Color");
   function Color negate(Color v) = rgb(-v.r, -v.g, -v.b);
@@ -57,7 +66,7 @@ endinstance
 
 function Action write_one_pixel
   (VGA vga, Bit#(32) x, Bit#(32) y, Bit#(8) r, Bit#(8) g, Bit#(8) b) =
-  vga.write(x + y * 320, {0,r,g,b}, 4'b0111);
+  vga.write(x + y * 320, {0,b,g,r}, 4'b0111);
 
 // Fabric interface (system verilog size) of the screen buffer
 interface VGAFabric;
@@ -116,10 +125,26 @@ module mkVGA(VGA);
   Reg#(Bit#(10)) hpos <- mkReg(0);
   Reg#(Bit#(10)) vpos <- mkReg(0);
 
+  Reg#(Bit#(13)) cycle <- mkReg(0);
+
+  `ifdef BSIM
+  rule step_cycle;
+    cycle <= cycle + 1;
+    if (cycle == 1) begin
+      if (mustExitRaylib()) exitRaylib();
+
+      beginDrawRaylib();
+    end
+  endrule
+  `endif
+
   Reg#(File) file <- mkReg(InvalidFile);
   Reg#(Bool) started <- mkReg(False);
 
   rule openFile if (!started);
+    `ifdef BSIM
+    initRaylib();
+    `endif
     File f <- $fopen("screen.txt", "w");
     started <= True;
     file <= f;
@@ -152,6 +177,12 @@ module mkVGA(VGA);
   method Action write(Bit#(32) addr, Bit#(32) data, Bit#(4) mask) if (started);
     if (mask[2:0] != 0)
       bram.b.put(mask[2:0], addr, data[23:0]);
+
+    `ifdef BSIM
+    let x = addr % fromInteger(xmax / 2);
+    let y = addr / fromInteger(xmax / 2);
+    drawRaylibPoint(x, y, data[7:0], data[15:8], data[23:16]);
+    `endif
   endmethod
 
   interface VGAFabric fabric;

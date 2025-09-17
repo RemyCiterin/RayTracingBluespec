@@ -41,7 +41,7 @@ svg:
 	$(foreach f, $(DOT_FILES), dot -Tsvg $(f) > $(f:.dot=.svg);)
 
 BSIM_FLAGS =  -bdir $(BSIM) -vdir $(BSIM) -simdir $(BSIM) -info-dir $(BSIM) \
-							-fdir $(BSIM) -l pthread
+							-fdir $(BSIM) -l pthread -l raylib -D BSIM
 
 BSC_FLAGS = -keep-fires -aggressive-conditions \
 						-check-assert -no-warn-action-shadowing
@@ -66,7 +66,7 @@ compile:
 bsim:
 	bsc $(BSC_FLAGS) $(BSIM_FLAGS) -p $(PACKAGES) -sim -u -g $(BSIM_MODULE) $(TOP)
 	bsc $(BSC_FLAGS) $(BSIM_FLAGS) -sim -e $(BSIM_MODULE) -o \
-		$(BSIM)/bsim $(BSIM)/*.ba
+		$(BSIM)/bsim $(BSIM)/*.ba src/simulation.c
 	./bsim/bsim -m 1000000000
 
 .PHONY: yosys
@@ -101,4 +101,5 @@ prog_t:
 .PHONY: clean
 clean:
 	rm -rf $(BUILD)/*
+	rm -rf $(BSIM)/*
 	rm -rf $(RTL)/*

@@ -82,7 +82,13 @@ module mkCPU(Soc_Ifc);
   Reg#(Bit#(32)) y <- mkReg(0);
 
   rule write_screen;
-    write_one_pixel(vga, x, y, 255, 255, 255);
+    Color sky = rgb(128, 178, 255);
+    Color a = rgb(truncate(y), truncate(y), truncate(y));
+    Color ones = rgb(255,255,255);
+
+    Color ret = (ones-a) * ones + a * sky;
+
+    write_one_pixel(vga, x, y, ret.r, ret.g, ret.b);
 
     if (x+1 == 320) begin
       y <= y+1 == 240 ? 0 : y+1;
@@ -114,7 +120,7 @@ module mkCPU_SIM(Empty);
   rule write_screen;
     Color sky = rgb(128, 178, 255);
     Color a = rgb(truncate(y), truncate(y), truncate(y));
-    Color ones = -1;
+    Color ones = rgb(255,255,255);
 
     Color ret = (ones-a) * ones + a * sky;
 

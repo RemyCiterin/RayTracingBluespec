@@ -9,10 +9,12 @@ pkgs.mkShell {
     pkgs.openfpgaloader
 
     pkgs.yosys
-    pkgs.nextpnr
+    pkgs.nextpnrWithGui
     pkgs.trellis
     pkgs.graphviz
     pkgs.fujprog
+
+    pkgs.raylib
   ];
 
   shellHook = ''
