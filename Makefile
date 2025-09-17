@@ -1,9 +1,12 @@
 RTL = rtl
+BSIM = bsim
 BUILD = build
 PACKAGES = ./src/:+
 SIM_FILE = ./build/mkTop_sim
 TOP = src/Soc.bsv
 
+BSIM_MODULE = mkCPU_SIM
+BUILD_MODULE = mkCPU
 
 LIB = \
 			$(BLUESPECDIR)/Verilog/SizedFIFO.v \
@@ -37,66 +40,65 @@ svg:
 	$(foreach f, $(DOT_FILES), sed -i '/Sched /d' $(f);)
 	$(foreach f, $(DOT_FILES), dot -Tsvg $(f) > $(f:.dot=.svg);)
 
-test:
-	tests/elf_to_hex/elf_to_hex ./tests/code/zig-out/bin/zig-unix.elf ./tests/Mem.hex
-	riscv32-none-elf-objdump ./tests/code/zig-out/bin/zig-unix.elf -D > ./tests/code/firmware.asm
+BSIM_FLAGS =  -bdir $(BSIM) -vdir $(BSIM) -simdir $(BSIM) -info-dir $(BSIM) \
+							-fdir $(BSIM) -l pthread
 
+BSC_FLAGS = -keep-fires -aggressive-conditions \
+						-check-assert -no-warn-action-shadowing
+
+BUILD_FLAGS = -show-schedule -sched-dot -bdir $(BUILD) -vdir $(RTL) \
+							-simdir $(BUILD) -info-dir $(BUILD) -fdir $(BUILD)
+
+
+.PHONY: compile
 compile:
-	bsc \
-		-verilog \
-		-vdir $(RTL) -bdir $(BUILD) -info-dir $(BUILD) \
-		-no-warn-action-shadowing -check-assert \
-		-keep-fires -aggressive-conditions -show-schedule -sched-dot \
-		-cpp +RTS -K128M -RTS  -show-range-conflict \
-		-p $(PACKAGES) -g mkCPU -u $(TOP)
+	bsc $(BUILD_FLAGS) $(BSC_FLAGS) -cpp +RTS -K128M -RTS \
+		-p $(PACKAGES) -verilog -u -g $(BUILD_MODULE) $(TOP)
+#	bsc \
+#		-verilog \
+#		-vdir $(RTL) -bdir $(BUILD) -info-dir $(BUILD) \
+#		-no-warn-action-shadowing -check-assert \
+#		-keep-fires -aggressive-conditions -show-schedule -sched-dot \
+#		-cpp +RTS -K128M -RTS  -show-range-conflict \
+#		-p $(PACKAGES) -g $(BUILD_MODULE) -u $(TOP)
 
+.PHONY: bsim
+bsim:
+	bsc $(BSC_FLAGS) $(BSIM_FLAGS) -p $(PACKAGES) -sim -u -g $(BSIM_MODULE) $(TOP)
+	bsc $(BSC_FLAGS) $(BSIM_FLAGS) -sim -e $(BSIM_MODULE) -o \
+		$(BSIM)/bsim $(BSIM)/*.ba
+	./bsim/bsim -m 1000000000
 
-link:
-	bsc -e mkCPU -verilog -o $(SIM_FILE) -vdir $(RTL) -bdir $(BUILD) \
-		-info-dir $(BUILD) -vsim iverilog $(RTL)/mkCPU.v
-
+.PHONY: yosys
 yosys:
 	yosys \
 		-DULX3S -q -p "synth_ecp5 -abc9 -top mkTop -json ./build/mkTop.json; prep; show -stretch -prefix count -format dot" \
 		rtl/* $(LIB)
 
-		#-DULX3S -q -p "synth_ecp5 -noabc9 -top mkTop -json ./build/mkTop.json" \
-		#-DULX3S -q -p "synth_ecp5 -abc9 -top mkTop -json ./build/mkTop.json" \
-
-yosys_ice40:
-	yosys \
-		-p "synth_ice40 -top mkTop -json ./build/mkTop.json" \
-		src/Top.v src/sdram_axi.v rtl/* $(LIB)
-
+.PHONY: nextpnr
 nextpnr:
 	nextpnr-ecp5 --force --timing-allow-fail --json ./build/mkTop.json --lpf ulx3s.lpf \
 		--textcfg ./build/mkTop_out.config --85k --package CABGA381
 
-nextpnr_ice40:
-	nextpnr-ice40 --up5k --timing-allow-fail --json ./build/mkTop.json --pcf ./Pins.pcf --asc build/mkTop.asc --package sg48
-
+.PHONY: nextpnr_gui
 nextpnr_gui:
 	nextpnr-ecp5 --force --timing-allow-fail --json ./build/mkTop.json --lpf ulx3s.lpf \
 		--textcfg ./build/mkTop_out.config --85k --freq 40 --package CABGA381 --gui
 
+.PHONY: ecppack
 ecppack:
 	ecppack --compress --svf-rowsize 100000 --svf ./build/mkTop.svf \
 		./build/mkTop_out.config ./build/mkTop.bit
 
-ram_simulate:
-	iverilog -o build/test_sdram.vvp -s test_sdram \
-		simulation/test_sdram.v rtl/* simulation/mt48lc16m16a2.v $(LIB)
-	vvp build/test_sdram.vvp
-
-simulate: link
-	$(SIM_FILE)
-
+.PHONY: prog
 prog:
 	sudo fujprog build/mkTop.bit
 
+.PHONY: prog_t
 prog_t:
 	sudo fujprog build/mkTop.bit -t
 
+.PHONY: clean
 clean:
 	rm -rf $(BUILD)/*
 	rm -rf $(RTL)/*

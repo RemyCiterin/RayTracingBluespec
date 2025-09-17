@@ -78,21 +78,11 @@ endinterface
 module mkCPU(Soc_Ifc);
   let vga <- mkVGA;
 
-  // Write a single pixel on the screen
-  function Action write_pixel(Bit#(32) x, Bit#(32) y, Bit#(8) r, Bit#(8) g, Bit#(8) b) =
-    vga.write((x >> 2) + y * 80, zeroExtend(pack(fromRGB(r,g,b))) << {x[1:0], 3'b000}, 1 << x[1:0]);
-
   Reg#(Bit#(32)) x <- mkReg(0);
   Reg#(Bit#(32)) y <- mkReg(0);
 
   rule write_screen;
-    Color16 sky = color16(6'b100000, 6'b110000, 4'b1111);
-
-    Color16 a = color16(y[5:0], y[5:0], y[3:0]);
-
-    Color16 ones = color16(-1, -1, -1);
-
-    write_one_color16(vga, x, y, (ones - a) * ones + a * sky);
+    write_one_pixel(vga, x, y, 255, 255, 255);
 
     if (x+1 == 320) begin
       y <= y+1 == 240 ? 0 : y+1;
@@ -111,4 +101,29 @@ module mkCPU(Soc_Ifc);
   method ftdi_txd = rx_uart.receive;
 
   interface vga_fab = vga.fabric;
+endmodule
+
+
+(* synthesize *)
+module mkCPU_SIM(Empty);
+  let vga <- mkVGA;
+
+  Reg#(Bit#(32)) x <- mkReg(0);
+  Reg#(Bit#(32)) y <- mkReg(0);
+
+  rule write_screen;
+    Color sky = rgb(128, 178, 255);
+    Color a = rgb(truncate(y), truncate(y), truncate(y));
+    Color ones = -1;
+
+    Color ret = (ones-a) * ones + a * sky;
+
+    write_one_pixel(vga, x, y, ret.r, ret.g, ret.b);
+
+    if (x+1 == 320) begin
+      y <= y+1 == 240 ? 0 : y+1;
+      x <= 0;
+    end else
+      x <= x + 1;
+  endrule
 endmodule
