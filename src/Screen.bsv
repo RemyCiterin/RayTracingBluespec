@@ -8,7 +8,7 @@ import BRAMCore :: *;
 
 `ifdef BSIM
 import "BDPI" function Action initRaylib();
-import "BDPI" function Action beginDrawRaylib();
+import "BDPI" function Action drawRaylib();
 import "BDPI" function Bool mustExitRaylib();
 import "BDPI" function Action exitRaylib();
 import "BDPI" function Action
@@ -51,7 +51,7 @@ instance Arith#(Color);
   function Color \+ (Color v1, Color v2) = rgb(v1.r + v2.r, v1.g + v2.g, v1.b + v2.b);
   function Color \- (Color v1, Color v2) = rgb(v1.r - v2.r, v1.g - v2.g, v1.b - v2.b);
   function Color \* (Color v1, Color v2) = multRgb(v1,v2);
-  function Color \/ (Color v1, Color v2) = rgb(v1.r / v2.r, v1.g / v2.g, v1.b / v2.b);
+  function Color \/ (Color v1, Color v2) = error("/ is undefined for Color");
   function Color \% (Color v1, Color v2) = error("% is undefined for Color");
   function Color negate(Color v) = rgb(-v.r, -v.g, -v.b);
   function Color abs(Color v) = error("abs is undefined for Color");
@@ -125,7 +125,7 @@ module mkVGA(VGA);
   Reg#(Bit#(10)) hpos <- mkReg(0);
   Reg#(Bit#(10)) vpos <- mkReg(0);
 
-  Reg#(Bit#(13)) cycle <- mkReg(0);
+  Reg#(Bit#(16)) cycle <- mkReg(0);
 
   `ifdef BSIM
   rule step_cycle;
@@ -133,7 +133,7 @@ module mkVGA(VGA);
     if (cycle == 1) begin
       if (mustExitRaylib()) exitRaylib();
 
-      beginDrawRaylib();
+      drawRaylib();
     end
   endrule
   `endif
@@ -157,7 +157,7 @@ module mkVGA(VGA);
     Bit#(32) ret = zeroExtend(h + v * fromInteger(xmax / 2));
     let addr = ret >= fromInteger(xmax * ymax / 4) ? 0 : ret;
 
-    $fdisplay(file, "h: %d v: %d addr: %d", h, v, addr);
+    //$fdisplay(file, "h: %d v: %d addr: %d", h, v, addr);
 
     bram.a.put(0, addr, ?);
   endrule

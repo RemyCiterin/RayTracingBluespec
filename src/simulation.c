@@ -25,7 +25,7 @@ bool mustExitRaylib() {
   return WindowShouldClose();
 }
 
-void beginDrawRaylib() {
+void drawRaylib() {
   BeginDrawing();
 
   ClearBackground(RAYWHITE);

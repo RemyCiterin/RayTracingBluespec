@@ -12,6 +12,7 @@ LIB = \
 			$(BLUESPECDIR)/Verilog/SizedFIFO.v \
 			$(BLUESPECDIR)/Verilog/FIFO1.v \
 			$(BLUESPECDIR)/Verilog/FIFO2.v \
+			$(BLUESPECDIR)/Verilog/FIFOL1.v \
 			$(BLUESPECDIR)/Verilog/BRAM1.v \
 			$(BLUESPECDIR)/Verilog/BRAM2.v \
 			$(BLUESPECDIR)/Verilog/BRAM1BE.v \
