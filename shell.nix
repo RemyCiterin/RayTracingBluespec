@@ -14,7 +14,7 @@ pkgs.mkShell {
     pkgs.graphviz
     pkgs.fujprog
 
-    pkgs.raylib
+    pkgs.SDL2
   ];
 
   shellHook = ''

@@ -42,7 +42,7 @@ svg:
 	$(foreach f, $(DOT_FILES), dot -Tsvg $(f) > $(f:.dot=.svg);)
 
 BSIM_FLAGS =  -bdir $(BSIM) -vdir $(BSIM) -simdir $(BSIM) -info-dir $(BSIM) \
-							-fdir $(BSIM) -l pthread -l raylib -D BSIM
+							-fdir $(BSIM) -l pthread -D BSIM -l SDL2
 
 BSC_FLAGS = -keep-fires -aggressive-conditions \
 						-check-assert -no-warn-action-shadowing

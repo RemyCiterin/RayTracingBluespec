@@ -144,7 +144,7 @@ module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
 endmodule
 
 module mkLength(Server#(Vec3, FP16));
-  let squareRooter <- mkFixedPointSquareRooter(2);
+  let squareRooter <- mkFixedPointSquareRooter(8);
 
   interface Get response;
     method ActionValue#(FP16) get;
@@ -163,7 +163,7 @@ module mkLength(Server#(Vec3, FP16));
 endmodule
 
 module mkFP16Divider(Server#(Tuple2#(FP16,FP16), FP16));
-  Server#(Tuple2#(Int#(32), Int#(16)), Tuple2#(Int#(16), Int#(16))) divider <- mkSignedDivider(1);
+  Server#(Tuple2#(Int#(32), Int#(16)), Tuple2#(Int#(16), Int#(16))) divider <- mkSignedDivider(8);
 
   interface Put request;
     method Action put(Tuple2#(FP16,FP16) p);
@@ -309,7 +309,7 @@ module mkComputeColor(Server#(Ray, Color));
   let hit <- mkIntersectTriangle;
 
   let triangle = Triangle{
-    vertex: vec(vec3(0, 0, -1), vec3(0, 1, -1), vec3(1, 0.1, -1)),
+    vertex: vec(vec3(0, 0, -1), vec3(1, 0.1, -1), vec3(0.1, 1, -1)),
     normal: 0
   };
 
@@ -383,6 +383,7 @@ module mkCPU(Soc_Ifc);
   let sky <- mkComputeColor;
 
   Reg#(Bit#(32)) cycle <- mkReg(0);
+  Reg#(Bit#(32)) frame <- mkReg(0);
 
   rule incr_cycle;
     cycle <= cycle + 1;
@@ -407,6 +408,11 @@ module mkCPU(Soc_Ifc);
     if (x+1 == 320) begin
       y <= y+1 == 240 ? 0 : y+1;
       x <= 0;
+
+      if (y+1 == 240) begin
+        $display("cycle: %d frame: %d", cycle, frame);
+        frame <= frame + 1;
+      end
     end else
       x <= x + 1;
   endrule

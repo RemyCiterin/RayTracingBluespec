@@ -7,12 +7,10 @@ import Ehr :: *;
 import BRAMCore :: *;
 
 `ifdef BSIM
-import "BDPI" function Action initRaylib();
-import "BDPI" function Action drawRaylib();
-import "BDPI" function Bool mustExitRaylib();
-import "BDPI" function Action exitRaylib();
+import "BDPI" function Action init();
+import "BDPI" function Action drawScreen();
 import "BDPI" function Action
-  drawRaylibPoint(Bit#(32) x, Bit#(32) y, Bit#(8) r, Bit#(8) g, Bit#(8) b);
+  setPoint(Bit#(32) x, Bit#(32) y, Bit#(8) r, Bit#(8) g, Bit#(8) b);
 `endif
 
 typedef struct {
@@ -130,11 +128,7 @@ module mkVGA(VGA);
   `ifdef BSIM
   rule step_cycle;
     cycle <= cycle + 1;
-    if (cycle == 1) begin
-      if (mustExitRaylib()) exitRaylib();
-
-      drawRaylib();
-    end
+    if (cycle == 1) drawScreen();
   endrule
   `endif
 
@@ -143,7 +137,7 @@ module mkVGA(VGA);
 
   rule openFile if (!started);
     `ifdef BSIM
-    initRaylib();
+    init();
     `endif
     File f <- $fopen("screen.txt", "w");
     started <= True;
@@ -181,7 +175,7 @@ module mkVGA(VGA);
     `ifdef BSIM
     let x = addr % fromInteger(xmax / 2);
     let y = addr / fromInteger(xmax / 2);
-    drawRaylibPoint(x, y, data[7:0], data[15:8], data[23:16]);
+    setPoint(x, y, data[7:0], data[15:8], data[23:16]);
     `endif
   endmethod
 
