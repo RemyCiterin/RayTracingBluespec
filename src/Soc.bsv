@@ -98,9 +98,9 @@ function Vec3 at(Ray r, F16 t) = r.origin + times(t, r.direction);
 
 // A module that inverse a 3x3 matrix
 module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
-  Fifo#(4, Bit#(1)) pathQ <- mkFifo;
+  Fifo#(8, Bit#(1)) pathQ <- mkFifo;
 
-  Fifo#(4, Vector#(3, Vec3)) comatrixQ <- mkFifo;
+  Fifo#(8, Vector#(3, Vec3)) comatrixQ <- mkFifo;
   let divider <- mkF16Divider;
 
   interface Get response;
@@ -144,7 +144,7 @@ module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
 endmodule
 
 module mkLength(Server#(Vec3, F16));
-  let squareRooter <- mkFixedPointSquareRooter(8);
+  let squareRooter <- mkFixedPointSquareRooter(16);
 
   interface Get response;
     method ActionValue#(F16) get;
@@ -163,7 +163,7 @@ module mkLength(Server#(Vec3, F16));
 endmodule
 
 module mkF16Divider(Server#(Tuple2#(F16,F16), F16));
-  Server#(Tuple2#(Int#(32), Int#(16)), Tuple2#(Int#(16), Int#(16))) divider <- mkSignedDivider(8);
+  Server#(Tuple2#(Int#(32), Int#(16)), Tuple2#(Int#(16), Int#(16))) divider <- mkSignedDivider(16);
 
   interface Put request;
     method Action put(Tuple2#(F16,F16) p);
@@ -198,6 +198,12 @@ typedef struct {
 
   // U-coordinate into the texture file
   F16 v;
+
+  // Texture file id
+  Bit#(16) texture_id;
+
+  // Instance id of the triangle
+  Bit#(16) instance_id;
 } RayHit deriving(Bits, FShow, Eq);
 
 typedef struct {
@@ -211,6 +217,12 @@ typedef struct {
   // triangle for a better rendering quality
   Vector#(3, Vec3) normal;
 
+  // Instance of the triangle
+  Bit#(16) instance_id;
+
+  // Texture file id
+  Bit#(16) texture_id;
+
   // U-coordinate into the texture file
   Vector#(3, F16) u;
 
@@ -221,7 +233,7 @@ typedef struct {
 module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
   let inverse <- mkInverse3;
 
-  Fifo#(4, Tuple2#(Ray, Triangle)) fifo <- mkFifo;
+  Fifo#(8, Tuple2#(Ray, Triangle)) fifo <- mkFifo;
 
   Fifo#(2, Tuple5#(Triangle, Bool, F16, F16, F16)) buffer <- mkFifo;
 
@@ -262,6 +274,8 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
       buffer.deq;
 
       let hit = RayHit{
+        instance_id: triangle.instance_id,
+        texture_id: triangle.texture_id,
         found: found,
         normal: ?,
         t: t,
@@ -297,7 +311,7 @@ module mkNormalizer(Server#(Vec3, Vec3));
   let divider2 <- mkF16Divider;
   let length <- mkLength;
 
-  Fifo#(4, Vec3) fifo <- mkFifo;
+  Fifo#(8, Vec3) fifo <- mkFifo;
 
   rule step;
     fifo.deq;
@@ -353,10 +367,12 @@ module mkComputeColor(Server#(Ray, Color));
   let hit <- mkIntersectTriangle;
 
   let triangle = Triangle{
-    vertex: vec(vec3(0, 0, -1), vec3(1, 0.1, -1), vec3(0.1, 1, -1)),
-    normal: vec(0, 0, 0),
+    vertex: vec(vec3(0, 0, -1), vec3(0.0, 0.5, -1), vec3(0.5, 0, -1)),
+    normal: vec(vec3(0,0,-1), vec3(0,0,-1), vec3(0,0,-1)),
     u: vec(0, 0, 1),
     v: vec(0, 1, 0),
+    instance_id: 0,
+    texture_id: 0,
     center: 0
   };
 
@@ -417,6 +433,20 @@ interface Soc_Ifc;
   interface VGAFabric vga_fab;
 endinterface
 
+Integer log_ray_per_piexel = 3;
+Bit#(32) ray_per_pixel = 1 << log_ray_per_piexel;
+
+module mkRandomBit#(Bit#(16) start)(Bit#(1));
+  Reg#(Bit#(16)) state <- mkReg(start);
+
+  rule step;
+    Bit#(1) b = state[0] ^ state[2] ^ state[3] ^ state[5];
+    state <= {b, truncateLSB(state)};
+  endrule
+
+  return state[15];
+endmodule
+
 (* synthesize *)
 module mkCPU(Soc_Ifc);
   TxUART tx_uart <- mkTxUART(217);
@@ -426,13 +456,26 @@ module mkCPU(Soc_Ifc);
 
   Reg#(Bit#(32)) x <- mkReg(0);
   Reg#(Bit#(32)) y <- mkReg(0);
+  Reg#(Bit#(32)) count <- mkReg(0);
 
-  Fifo#(8, Tuple2#(Bit#(32), Bit#(32))) fifo <- mkFifo;
+  Fifo#(8, Tuple3#(Bit#(32), Bit#(32), Bool)) fifo <- mkFifo;
 
   let sky <- mkComputeColor;
 
   Reg#(Bit#(32)) cycle <- mkReg(0);
   Reg#(Bit#(32)) frame <- mkReg(0);
+
+  Bit#(1) random1 <- mkRandomBit(16'h7CE1);
+  Bit#(1) random2 <- mkRandomBit(16'h0CE1);
+  Bit#(1) random3 <- mkRandomBit(16'hBCE1);
+  Bit#(1) random4 <- mkRandomBit(16'hACF1);
+  Bit#(4) r1 = {random1,random2,random3,random4};
+
+  Bit#(1) random5 <- mkRandomBit(16'h7CE9);
+  Bit#(1) random6 <- mkRandomBit(16'h0C31);
+  Bit#(1) random7 <- mkRandomBit(16'hBC61);
+  Bit#(1) random8 <- mkRandomBit(16'hAC21);
+  Bit#(4) r2 = {random5,random6,random7,random8};
 
   rule incr_cycle;
     cycle <= cycle + 1;
@@ -440,38 +483,62 @@ module mkCPU(Soc_Ifc);
 
   rule enq_request;
     // x and y are too big to fit into an F16 so we divide them first by 16
-    F16 u = F16{i: truncate(x >> 4), f: {x[3:0], 0}};
-    F16 v = F16{i: truncate(y >> 4), f: {y[3:0], 0}};
+    F16 u = F16{i: truncate(x >> 4), f: {x[3:0], r1}};
+    F16 v = F16{i: truncate(y >> 4), f: {y[3:0], r2}};
 
     Vec3 pixel_center =
       pixel00_loc +
       (vec3(u,u,u) * (pixel_delta_u * 16)) +
       (vec3(v,v,v) * (pixel_delta_v * 16));
 
-    fifo.enq(tuple2(x,y));
+    fifo.enq(tuple3(x,y,count+1==ray_per_pixel));
     sky.request.put(Ray{
       origin: vec3(0,0,0),
       direction: pixel_center - camera_center
     });
 
-    if (x+1 == 320) begin
-      y <= y+1 == 240 ? 0 : y+1;
-      x <= 0;
+    if (count+1 == ray_per_pixel) begin
+      count <= 0;
 
-      if (y+1 == 240) begin
-        $display("cycle: %d frame: %d", cycle, frame);
-        frame <= frame + 1;
-      end
-    end else
-      x <= x + 1;
+      if (x+1 == 320) begin
+        y <= y+1 == 240 ? 0 : y+1;
+        x <= 0;
+
+        if (y+1 == 240) begin
+          $display("cycle: %d frame: %d", cycle, frame);
+          frame <= frame + 1;
+        end
+      end else
+        x <= x + 1;
+    end else begin
+      count <= count + 1;
+    end
   endrule
 
+  Reg#(Vector#(3,Bit#(16))) current_color <- mkReg(vec(0,0,0));
   rule deq_response;
-    match {.i, .j} = fifo.first;
+    match {.i, .j, .last} = fifo.first;
     let c <- sky.response.get;
     fifo.deq;
 
-    write_one_pixel(vga, i, j, c.r, c.g, c.b);
+    Vector#(3,Bit#(16)) color = vec(
+      current_color[0] + zeroExtend(c.r),
+      current_color[1] + zeroExtend(c.g),
+      current_color[2] + zeroExtend(c.b)
+    );
+
+    if (last) begin
+      write_one_pixel(
+        vga, i, j,
+        (color[0] >> log_ray_per_piexel)[7:0],
+        (color[1] >> log_ray_per_piexel)[7:0],
+        (color[2] >> log_ray_per_piexel)[7:0]
+      );
+
+      current_color <= vec(0, 0, 0);
+    end else begin
+      current_color <= color;
+    end
   endrule
 
   method led = led_state;

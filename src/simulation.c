@@ -5,8 +5,8 @@
 #include <SDL2/SDL.h>
 
 
-#define screenWidth 640
-#define screenHeight 480
+#define screenWidth 1280
+#define screenHeight 960
 
 typedef struct Color {
   unsigned char r;
@@ -24,7 +24,9 @@ void init() {
     "ulx3s simulation",
     SDL_WINDOWPOS_CENTERED,
     SDL_WINDOWPOS_CENTERED,
-    640, 480, 0
+    screenWidth,
+    screenHeight,
+    0
   );
 
   if (!window) exit(1);
@@ -36,10 +38,11 @@ void init() {
 
 // Draw four pixels (bluespec see the screen as a size 320*240)
 void setPoint(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
-  draw[2*x+1][2*y+1] = (Color){r,g,b};
-  draw[2*x][2*y+1] = (Color){r,g,b};
-  draw[2*x+1][2*y] = (Color){r,g,b};
-  draw[2*x][2*y] = (Color){r,g,b};
+  for (int i=0; i < 4; i++) {
+    for (int j=0; j < 4; j++) {
+      draw[4*x+i][4*y+j] = (Color){r,g,b};
+    }
+  }
 }
 
 void drawScreen() {

@@ -22,9 +22,9 @@ typedef struct {
 function Color rgb(Bit#(8) r, Bit#(8) g, Bit#(8) b) = Color{r:r, g:g, b:b};
 
 function Color multRgb(Color c1, Color c2);
-  Bit#(16) r = 0;//zeroExtend(c1.r)*zeroExtend(c2.r);//0;
-  Bit#(16) g = 0;//zeroExtend(c1.g)*zeroExtend(c2.g);//0;
-  Bit#(16) b = 0;//zeroExtend(c1.b)*zeroExtend(c2.b);//0;
+  Bit#(16) r = 0;
+  Bit#(16) g = 0;
+  Bit#(16) b = 0;
 
   for (Integer i=0; i < 8; i = i + 1) begin
     r = r + (c1.r[i] == 1 ? zeroExtend(c2.r) << i : 0);
@@ -123,7 +123,7 @@ module mkVGA(VGA);
   Reg#(Bit#(10)) hpos <- mkReg(0);
   Reg#(Bit#(10)) vpos <- mkReg(0);
 
-  Reg#(Bit#(16)) cycle <- mkReg(0);
+  Reg#(Bit#(18)) cycle <- mkReg(0);
 
   `ifdef BSIM
   rule step_cycle;
@@ -132,16 +132,13 @@ module mkVGA(VGA);
   endrule
   `endif
 
-  Reg#(File) file <- mkReg(InvalidFile);
   Reg#(Bool) started <- mkReg(False);
 
   rule openFile if (!started);
     `ifdef BSIM
     init();
     `endif
-    File f <- $fopen("screen.txt", "w");
     started <= True;
-    file <= f;
   endrule
 
   rule enqBramRead;
@@ -150,8 +147,6 @@ module mkVGA(VGA);
 
     Bit#(32) ret = zeroExtend(h + v * fromInteger(xmax / 2));
     let addr = ret >= fromInteger(xmax * ymax / 4) ? 0 : ret;
-
-    //$fdisplay(file, "h: %d v: %d addr: %d", h, v, addr);
 
     bram.a.put(0, addr, ?);
   endrule
