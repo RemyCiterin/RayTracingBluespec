@@ -14,23 +14,23 @@ import BuildVector :: *;
 
 import FixedPoint :: *;
 
-typedef FixedPoint#(8,8) FP16;
+typedef FixedPoint#(8,8) F16;
 
 typedef struct {
-  FP16 x;
-  FP16 y;
-  FP16 z;
+  F16 x;
+  F16 y;
+  F16 z;
 } Point3
 deriving(Bits, FShow, Eq);
 
-function Point3 point3(FP16 x, FP16 y, FP16 z) =
+function Point3 point3(F16 x, F16 y, F16 z) =
   Point3{x:x, y:y, z:z};
 
-function Point3 const3(FP16 x) = point3(x, x, x);
+function Point3 const3(F16 x) = point3(x, x, x);
 
 typedef Point3 Vec3;
 
-function Vec3 vec3(FP16 x, FP16 y, FP16 z) = point3(x, y, z);
+function Vec3 vec3(F16 x, F16 y, F16 z) = point3(x, y, z);
 
 typedef struct {
   Point3 origin;
@@ -64,9 +64,9 @@ instance Arith#(Vec3);
   function Vec3 logb(Vec3 b, Vec3 v) = error("logb is undefined for Vec3");
 endinstance
 
-function FP16 dot3(Vec3 v1, Vec3 v2) = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+function F16 dot3(Vec3 v1, Vec3 v2) = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
 
-function FP16 det3(Vec3 v1, Vec3 v2, Vec3 v3) = dot3(cross3(v1, v2), v3);
+function F16 det3(Vec3 v1, Vec3 v2, Vec3 v3) = dot3(cross3(v1, v2), v3);
 
 function Vector#(3, Vec3) comatrix3(Vec3 v1, Vec3 v2, Vec3 v3) =
   vec(cross3(v2, v3), cross3(v3, v1), cross3(v1, v2));
@@ -92,16 +92,16 @@ function Vector#(3, Vec3) transpose3(Vec3 v1, Vec3 v2, Vec3 v3) =
     vec3(v1.z, v2.z, v3.z)
   );
 
-function Vec3 times(FP16 s, Vec3 v) = vec3(s * v.x, s * v.y, s * v.z);
+function Vec3 times(F16 s, Vec3 v) = vec3(s * v.x, s * v.y, s * v.z);
 
-function Vec3 at(Ray r, FP16 t) = r.origin + times(t, r.direction);
+function Vec3 at(Ray r, F16 t) = r.origin + times(t, r.direction);
 
 // A module that inverse a 3x3 matrix
 module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
   Fifo#(4, Bit#(1)) pathQ <- mkFifo;
 
   Fifo#(4, Vector#(3, Vec3)) comatrixQ <- mkFifo;
-  let divider <- mkFP16Divider;
+  let divider <- mkF16Divider;
 
   interface Get response;
     method ActionValue#(Maybe#(Vector#(3,Vec3))) get;
@@ -143,11 +143,11 @@ module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
   endinterface
 endmodule
 
-module mkLength(Server#(Vec3, FP16));
+module mkLength(Server#(Vec3, F16));
   let squareRooter <- mkFixedPointSquareRooter(8);
 
   interface Get response;
-    method ActionValue#(FP16) get;
+    method ActionValue#(F16) get;
       match {.x, .*} <- squareRooter.response.get;
       return x;
     endmethod
@@ -162,21 +162,21 @@ module mkLength(Server#(Vec3, FP16));
   endinterface
 endmodule
 
-module mkFP16Divider(Server#(Tuple2#(FP16,FP16), FP16));
+module mkF16Divider(Server#(Tuple2#(F16,F16), F16));
   Server#(Tuple2#(Int#(32), Int#(16)), Tuple2#(Int#(16), Int#(16))) divider <- mkSignedDivider(8);
 
   interface Put request;
-    method Action put(Tuple2#(FP16,FP16) p);
+    method Action put(Tuple2#(F16,F16) p);
       action
-        function Int#(16) toUInt16(FP16 x) = unpack(pack(x));
-        function Int#(32) toUInt32(FP16 x) = signExtend(toUInt16(x));
+        function Int#(16) toUInt16(F16 x) = unpack(pack(x));
+        function Int#(32) toUInt32(F16 x) = signExtend(toUInt16(x));
         divider.request.put(tuple2(toUInt32(p.fst) << 8, toUInt16(p.snd)));
       endaction
     endmethod
   endinterface
 
   interface Get response;
-    method ActionValue#(FP16) get;
+    method ActionValue#(F16) get;
       match {.x, .*} <- divider.response.get;
       return unpack(pack(x));
     endmethod
@@ -191,24 +191,60 @@ typedef struct {
   Vec3 normal;
 
   // The hit position is: ray.center + t * ray.direction
-  FP16 t;
+  F16 t;
+
+  // U-coordinate into the texture file
+  F16 u;
+
+  // U-coordinate into the texture file
+  F16 v;
 } RayHit deriving(Bits, FShow, Eq);
 
 typedef struct {
-  //// Center of the triangle
-  //Point3 center;
+  // Center of the triangle
+  Point3 center;
 
   // Vertex of the triangle
   Vector#(3, Point3) vertex;
 
-  // Momoized normal vector of the triangle
-  Vec3 normal;
+  // Normal vector to each vertex of the triangle, we return it instead of the normal vector to the
+  // triangle for a better rendering quality
+  Vector#(3, Vec3) normal;
+
+  // U-coordinate into the texture file
+  Vector#(3, F16) u;
+
+  // V-coordinate into the texture file
+  Vector#(3, F16) v;
 } Triangle deriving(Bits, FShow, Eq);
 
 module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
   let inverse <- mkInverse3;
 
   Fifo#(4, Tuple2#(Ray, Triangle)) fifo <- mkFifo;
+
+  Fifo#(2, Tuple5#(Triangle, Bool, F16, F16, F16)) buffer <- mkFifo;
+
+  rule step;
+    match {.ray, .triangle} = fifo.first;
+    fifo.deq;
+
+    let inv_opt <- inverse.response.get;
+
+    if (inv_opt matches tagged Valid .inv) begin
+      let ret = apply3(inv[0], inv[1], inv[2], ray.origin - triangle.vertex[0]);
+      let u = ret.x;
+      let v = ret.y;
+      let t = ret.z;
+
+      Bool found = u >= 0 && v >= 0 && u+v <= 1 && t > 0;
+      buffer.enq(tuple5(triangle, found, u, v, t));
+
+
+    end else begin
+      buffer.enq(tuple5(triangle, False, 0, 0, 0));
+    end
+  endrule
 
   interface Put request;
     method Action put(Tuple2#(Ray, Triangle) in);
@@ -222,25 +258,33 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
 
   interface Get response;
     method ActionValue#(RayHit) get;
-      match {.ray, .triangle} = fifo.first;
-      fifo.deq;
+      match {.triangle, .found, .u, .v, .t} = buffer.first;
+      buffer.deq;
 
       let hit = RayHit{
-        normal: triangle.normal,
-        found: False,
-        t: ?
+        found: found,
+        normal: ?,
+        t: t,
+        u: ?,
+        v: ?
       };
 
-      let inv_opt <- inverse.response.get;
+      let w = 1 - (u + v);
 
-      if (inv_opt matches tagged Valid .inv) begin
-        let ret = apply3(inv[0], inv[1], inv[2], ray.origin - triangle.vertex[0]);
-        let u = ret.x;
-        let v = ret.y;
-        hit.t = ret.z;
+      hit.normal =
+        const3(u) * triangle.normal[0] +
+        const3(v) * triangle.normal[1] +
+        const3(w) * triangle.normal[2];
 
-        hit.found = u >= 0 && v >= 0 && u+v <= 1 && hit.t >= 0;
-      end
+      hit.u =
+        u * triangle.u[0] +
+        v * triangle.u[1] +
+        w * triangle.u[2];
+
+      hit.v =
+        u * triangle.v[0] +
+        v * triangle.v[1] +
+        w * triangle.v[2];
 
       return hit;
     endmethod
@@ -248,9 +292,9 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
 endmodule
 
 module mkNormalizer(Server#(Vec3, Vec3));
-  let divider0 <- mkFP16Divider;
-  let divider1 <- mkFP16Divider;
-  let divider2 <- mkFP16Divider;
+  let divider0 <- mkF16Divider;
+  let divider1 <- mkF16Divider;
+  let divider2 <- mkF16Divider;
   let length <- mkLength;
 
   Fifo#(4, Vec3) fifo <- mkFifo;
@@ -310,7 +354,10 @@ module mkComputeColor(Server#(Ray, Color));
 
   let triangle = Triangle{
     vertex: vec(vec3(0, 0, -1), vec3(1, 0.1, -1), vec3(0.1, 1, -1)),
-    normal: 0
+    normal: vec(0, 0, 0),
+    u: vec(0, 0, 1),
+    v: vec(0, 1, 0),
+    center: 0
   };
 
   interface Put request;
@@ -325,13 +372,15 @@ module mkComputeColor(Server#(Ray, Color));
       let c <- sky.response.get;
       let h <- hit.response.get;
 
-      if (h.found) return rgb(255,0,0);
-      else return c;
+      if (h.found) begin
+        let w = 1 - h.u.f - h.v.f;
+        return rgb(h.u.f,h.v.f,w);
+      end else return c;
     endmethod
   endinterface
 endmodule
 
-FP16 focal_length = 1.0;
+F16 focal_length = 1.0;
 
 Point3 camera_center = point3(0, 0, 0);
 
@@ -390,9 +439,9 @@ module mkCPU(Soc_Ifc);
   endrule
 
   rule enq_request;
-    // x and y are too big to fit into an FP16 so we divide them first by 16
-    FP16 u = FP16{i: truncate(x >> 4), f: {x[3:0], 0}};
-    FP16 v = FP16{i: truncate(y >> 4), f: {y[3:0], 0}};
+    // x and y are too big to fit into an F16 so we divide them first by 16
+    F16 u = F16{i: truncate(x >> 4), f: {x[3:0], 0}};
+    F16 v = F16{i: truncate(y >> 4), f: {y[3:0], 0}};
 
     Vec3 pixel_center =
       pixel00_loc +
