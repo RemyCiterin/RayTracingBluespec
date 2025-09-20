@@ -490,6 +490,123 @@ typedef struct {
   Vector#(3, F16) v;
 } Triangle deriving(Bits, FShow, Eq);
 
+
+module mkIntersectTriangleRaw(Server#(Tuple2#(Ray, Triangle), Maybe#(Tuple3#(F16,F16,F16))));
+  let cross1 <- mkCross3;
+  let cross2 <- mkCross3;
+
+  let dot1 <- mkDot3;
+  let dot2 <- mkDot3;
+  let dot3 <- mkDot3;
+  let dot4 <- mkDot3;
+
+  let div <- mkF16Divider;
+
+  let add1 <- mkF16Adder;
+  let add2 <- mkF16Adder;
+  let add3 <- mkF16Adder;
+
+  let mul1 <- mkF16Multiplier;
+  let mul2 <- mkF16Multiplier;
+  let mul3 <- mkF16Multiplier;
+
+  Fifo#(8,Vec3) edge1_queue1 <- mkFifo;
+
+  Fifo#(2,Vec3) edge2_queue1 <- mkFifo;
+  Fifo#(8,Vec3) edge2_queue2 <- mkFifo;
+
+  Fifo#(8,Vec3) s_queue1 <- mkFifo;
+
+  Fifo#(8,Vec3) q_queue1 <- mkFifo;
+  Fifo#(8,Vec3) q_queue2 <- mkFifo;
+
+  Fifo#(8,Vec3) h_queue1 <- mkFifo;
+
+  Fifo#(2,F16) f_queue1 <- mkFifo;
+  Fifo#(2,F16) f_queue2 <- mkFifo;
+  Fifo#(2,F16) f_queue3 <- mkFifo;
+
+  Fifo#(2,Vec3) d_queue1 <- mkFifo;
+  Fifo#(2,Vec3) d_queue2 <- mkFifo;
+
+  Fifo#(2,Vec3) o_queue1 <- mkFifo;
+
+  rule stage2;
+    let edge1 <- add1.response.get;
+    edge1_queue1.enq(edge1);
+
+    let s <- add3.response.get;
+    s_queue1.enq(s);
+
+    let edge2 <- add2.response.get;
+    edge2_queue1.enq(edge2);
+    edge2_queue2.enq(edge2);
+
+    d_queue1.deq;
+    let d = d_queue1.first;
+
+    cross1.request.put(tuple2(s, edge1));
+    cross2.request.put(tuple2(d, edge2));
+  endrule
+
+  rule stage3;
+    let q <- cross1.response.get;
+    let h <- cross2.response.get;
+
+    q_queue1.enq(q);
+    q_queue2.enq(q);
+
+    h_queue1.enq(h);
+
+    edge1_queue1.deq;
+    let edge1 = edge1_queue1.first;
+
+    dot1.request.put(tuple2(edge1, h));
+  endrule
+
+  rule stage4;
+    let a = dot1.response.get;
+
+  endrule
+
+  interface Put request;
+    method Action put(Tuple2#(Ray, Triangle) p);
+      action
+        match {.r, .t} = p;
+        add1.request.put(tuple2(t.vertex[1], negate(t.vertex[0])));
+        add2.request.put(tuple2(t.vertex[2], negate(t.vertex[0])));
+        add3.request.put(tuple2(r.origin, negate(t.vertex[0])));
+
+        o_queue1.enq(r.origin);
+        d_queue1.enq(r.direction);
+        d_queue2.enq(r.direction);
+      endaction
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(F16) get;
+
+
+    endmethod
+  endinterface
+
+//  float3 edge1 = tri.vertex1 - tri.vertex0; // stage 1
+//  float3 edge2 = tri.vertex2 - tri.vertex0; // stage 1
+//  float3 s = ray.O - tri.vertex0;           // stage 1
+//  float3 q = cross( s, edge1 );             // stage 2
+//  float3 h = cross( ray.D, edge2 );         // stage 2
+//  float a = dot( edge1, h );                // stage 3
+//  float f = 1 / a;                          // stage 4
+//  float v = f * dot( ray.D, q );            // stage 5 and 6
+//  float u = f * dot( s, h );                // stage 5 and 6
+//  float t = f * dot( edge2, q );            // stage 5 and 6
+//  if (a > -0.0001f && a < 0.0001f) return; // ray parallel to triangle
+//  if (u < 0 || u > 1) return;
+//  if (v < 0 || u + v > 1) return;
+//  if (t > 0.0001f) ray.t = min( ray.t, t );
+endmodule
+
 // module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
 //   let inverse <- mkInverse3;
 //
