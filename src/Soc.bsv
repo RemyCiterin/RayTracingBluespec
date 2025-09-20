@@ -13,12 +13,21 @@ import Vector :: *;
 import BuildVector :: *;
 
 import FixedPoint :: *;
+import FloatingPoint :: *;
 
-typedef 8 F;
-typedef 8 I;
-typedef TAdd#(F,I) WIDTH;
+typedef FloatingPoint#(5,10) F16;
 
-typedef FixedPoint#(I,F) F16;
+RoundMode round = Rnd_Zero;
+
+function F16 int16ToF16(Int#(16) x);
+  match {.f, .*} = vFixedToFloat(x, 6'b0, round);
+  return f;
+endfunction
+
+function Int#(16) f16ToInt16(F16 f);
+  match {.x, .*} = vFloatToFixed(6'b0, f, round);
+  return x;
+endfunction
 
 typedef struct {
   F16 x;
@@ -101,29 +110,79 @@ function Vec3 times(F16 s, Vec3 v) = vec3(s * v.x, s * v.y, s * v.z);
 function Vec3 at(Ray r, F16 t) = r.origin + times(t, r.direction);
 
 // A module that inverse a 3x3 matrix
+(* synthesize *)
 module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
   Fifo#(8, Bit#(1)) pathQ <- mkFifo;
 
-  Fifo#(8, Vector#(3, Vec3)) comatrixQ <- mkFifo;
   let divider <- mkF16Divider;
+
+  let detUnit <- mkDet3;
+  let comatrixUnit <- mkComatrix3;
+
+  let mul1 <- mkF16Multiplier;
+  let mul2 <- mkF16Multiplier;
+  let mul3 <- mkF16Multiplier;
+  let mul4 <- mkF16Multiplier;
+  let mul5 <- mkF16Multiplier;
+  let mul6 <- mkF16Multiplier;
+  let mul7 <- mkF16Multiplier;
+  let mul8 <- mkF16Multiplier;
+  let mul9 <- mkF16Multiplier;
+
+  rule step1;
+    let d <- detUnit.response.get;
+    divider.request.put(tuple2(1,d));
+
+    if (isZero(d)) begin
+      pathQ.enq(1);
+    end else begin
+      pathQ.enq(0);
+    end
+  endrule
+
+  rule step2;
+    let com <- comatrixUnit.response.get;
+    let x <- divider.response.get;
+
+    let m = transpose3(com[0], com[1], com[2]);
+
+    mul1.request.put(tuple2(x, m[0].x));
+    mul2.request.put(tuple2(x, m[0].y));
+    mul3.request.put(tuple2(x, m[0].z));
+
+    mul4.request.put(tuple2(x, m[1].x));
+    mul5.request.put(tuple2(x, m[1].y));
+    mul6.request.put(tuple2(x, m[1].z));
+
+    mul7.request.put(tuple2(x, m[2].x));
+    mul8.request.put(tuple2(x, m[2].y));
+    mul9.request.put(tuple2(x, m[2].z));
+  endrule
 
   interface Get response;
     method ActionValue#(Maybe#(Vector#(3,Vec3))) get;
       pathQ.deq;
 
+      let m0x <- mul1.response.get;
+      let m0y <- mul2.response.get;
+      let m0z <- mul3.response.get;
+
+      let m1x <- mul4.response.get;
+      let m1y <- mul5.response.get;
+      let m1z <- mul6.response.get;
+
+      let m2x <- mul7.response.get;
+      let m2y <- mul8.response.get;
+      let m2z <- mul9.response.get;
+
       if (pathQ.first == 1) begin
         // The matrix is not inversible
         return Invalid;
       end else begin
-        comatrixQ.deq;
-        let com = comatrixQ.first;
-        let m = transpose3(com[0], com[1], com[2]);
-        let inv_det <- divider.response.get;
-
         return Valid(vec(
-          m[0] * const3(inv_det),
-          m[1] * const3(inv_det),
-          m[2] * const3(inv_det)
+          vec3(m0x, m0y, m0z),
+          vec3(m1x, m1y, m1z),
+          vec3(m2x, m2y, m2z)
         ));
       end
     endmethod
@@ -134,21 +193,17 @@ module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
       action
         let det = det3(m[0], m[1], m[2]);
         let com = comatrix3(m[0], m[1], m[2]);
-
-        if (det == 0) begin
-          pathQ.enq(1);
-        end else begin
-          divider.request.put(tuple2(1, det));
-          comatrixQ.enq(com);
-          pathQ.enq(0);
-        end
+        detUnit.request.put(m);
+        comatrixUnit.request.put(m);
       endaction
     endmethod
   endinterface
 endmodule
 
+(* synthesize *)
 module mkLength(Server#(Vec3, F16));
-  let squareRooter <- mkFixedPointSquareRooter(16);
+  let sqrt_raw <- mkSquareRooter(8);
+  let squareRooter <- mkFloatingPointSquareRooter(sqrt_raw);
 
   interface Get response;
     method ActionValue#(F16) get;
@@ -160,23 +215,222 @@ module mkLength(Server#(Vec3, F16));
   interface Put request;
     method Action put(Vec3 v);
       action
-        squareRooter.request.put(dot3(v,v));
+        squareRooter.request.put(tuple2(dot3(v,v), round));
       endaction
     endmethod
   endinterface
 endmodule
 
-module mkF16Divider(Server#(Tuple2#(F16,F16), F16));
-  Server#(
-    Tuple2#(Int#(TMul#(2,WIDTH)), Int#(WIDTH)),
-    Tuple2#(Int#(WIDTH), Int#(WIDTH))) divider <- mkSignedDivider(16);
+(* synthesize *)
+module mkF16Adder(Server#(Tuple2#(F16,F16),F16));
+  let adder <- mkFloatingPointAdder;
 
   interface Put request;
     method Action put(Tuple2#(F16,F16) p);
       action
-        function Int#(WIDTH) toUInt16(F16 x) = unpack(pack(x));
-        function Int#(TMul#(2,WIDTH)) toUInt32(F16 x) = signExtend(toUInt16(x));
-        divider.request.put(tuple2(toUInt32(p.fst) << valueOf(F), toUInt16(p.snd)));
+        adder.request.put(tuple3(p.fst,p.snd,round));
+      endaction
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(F16) get;
+      match {.x, .*} <- adder.response.get;
+      return unpack(pack(x));
+    endmethod
+  endinterface
+endmodule
+
+(* synthesize *)
+module mkDot3(Server#(Tuple2#(Vec3,Vec3),F16));
+  Fifo#(16,Tuple2#(F16,F16)) fifo <- mkFifo;
+  let mul1 <- mkF16Multiplier;
+  let mul2 <- mkF16Multiplier;
+  let add <- mkF16Adder;
+  let fma <- mkFMA;
+
+  rule s1;
+    let x <- mul1.response.get;
+    let y <- mul2.response.get;
+    add.request.put(tuple2(x,y));
+  endrule
+
+  rule s2;
+    fifo.deq;
+    let xy <- add.response.get;
+    match {.z1,.z2} = fifo.first;
+    fma.request.put(tuple3(z1,z2,xy));
+  endrule
+
+  interface Put request;
+    method Action put(Tuple2#(Vec3,Vec3) p);
+      action
+        mul1.request.put(tuple2(p.fst.x, p.snd.x));
+        mul2.request.put(tuple2(p.fst.y, p.snd.y));
+        fifo.enq(tuple2(p.fst.z, p.snd.z));
+      endaction
+    endmethod
+  endinterface
+
+  interface response = fma.response;
+endmodule
+
+(* synthesize *)
+module mkCross3(Server#(Tuple2#(Vec3,Vec3),Vec3));
+  let mul1 <- mkF16Multiplier;
+  let mul2 <- mkF16Multiplier;
+  let mul3 <- mkF16Multiplier;
+  let mul4 <- mkF16Multiplier;
+  let mul5 <- mkF16Multiplier;
+  let mul6 <- mkF16Multiplier;
+  let add1 <- mkF16Adder;
+  let add2 <- mkF16Adder;
+  let add3 <- mkF16Adder;
+
+  rule step12;
+    let x <- mul1.response.get;
+    let y <- mul2.response.get;
+    add1.request.put(tuple2(x,negate(y)));
+  endrule
+
+  rule step34;
+    let x <- mul3.response.get;
+    let y <- mul4.response.get;
+    add2.request.put(tuple2(x,negate(y)));
+  endrule
+
+  rule step56;
+    let x <- mul5.response.get;
+    let y <- mul6.response.get;
+    add3.request.put(tuple2(x,negate(y)));
+  endrule
+
+  interface Put request;
+    method Action put(Tuple2#(Vec3,Vec3) p);
+      action
+        mul1.request.put(tuple2(p.fst.y, p.snd.z));
+        mul2.request.put(tuple2(p.fst.z, p.snd.y));
+
+        mul3.request.put(tuple2(p.fst.z, p.snd.x));
+        mul4.request.put(tuple2(p.fst.x, p.snd.z));
+
+        mul5.request.put(tuple2(p.fst.x, p.snd.y));
+        mul6.request.put(tuple2(p.fst.y, p.snd.x));
+      endaction
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(Vec3) get;
+      let x <- add1.response.get;
+      let y <- add2.response.get;
+      let z <- add3.response.get;
+
+      return vec3(x,y,z);
+    endmethod
+  endinterface
+endmodule
+
+(* synthesize *)
+module mkDet3(Server#(Vector#(3,Vec3),F16));
+  Fifo#(16,Vec3) fifo <- mkFifo;
+  let c <- mkCross3;
+  let d <- mkDot3;
+
+  rule step;
+    fifo.deq;
+    let x <- c.response.get;
+    d.request.put(tuple2(x,fifo.first));
+  endrule
+
+  interface Put request;
+    method Action put(Vector#(3,Vec3) m);
+      action
+        fifo.enq(m[2]);
+        c.request.put(tuple2(m[0],m[1]));
+      endaction
+    endmethod
+  endinterface
+
+  interface response = d.response;
+endmodule
+
+(* synthesize *)
+module mkComatrix3(Server#(Vector#(3,Vec3),Vector#(3,Vec3)));
+  let c1 <- mkCross3;
+  let c2 <- mkCross3;
+  let c3 <- mkCross3;
+
+  interface Put request;
+    method Action put(Vector#(3,Vec3) m);
+      c1.request.put(tuple2(m[1],m[2]));
+      c2.request.put(tuple2(m[2],m[0]));
+      c3.request.put(tuple2(m[0],m[1]));
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(Vector#(3,Vec3)) get;
+      let x <- c1.response.get;
+      let y <- c2.response.get;
+      let z <- c3.response.get;
+      return vec(x,y,z);
+    endmethod
+  endinterface
+endmodule
+
+// Compute a*b+c for each request tuple3(a,b,c)
+(* synthesize *)
+module mkFMA(Server#(Tuple3#(F16,F16,F16),F16));
+  let fma <- mkFloatingPointFusedMultiplyAccumulate;
+
+  interface Put request;
+    // compute a * b + c
+    method Action put(Tuple3#(F16,F16,F16) p);
+      action
+        match {.a,.b,.c} = p;
+        fma.request.put(tuple4(Valid(c),a,b,round));
+      endaction
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(F16) get;
+      match {.x, .*} <- fma.response.get;
+      return unpack(pack(x));
+    endmethod
+  endinterface
+endmodule
+
+(* synthesize *)
+module mkF16Multiplier(Server#(Tuple2#(F16,F16), F16));
+  let multiplier <- mkFloatingPointMultiplier;
+
+  interface Put request;
+    method Action put(Tuple2#(F16,F16) p);
+      action
+        multiplier.request.put(tuple3(p.fst,p.snd,round));
+      endaction
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(F16) get;
+      match {.x, .*} <- multiplier.response.get;
+      return unpack(pack(x));
+    endmethod
+  endinterface
+endmodule
+
+(* synthesize *)
+module mkF16Divider(Server#(Tuple2#(F16,F16), F16));
+  let div <- mkDivider(4);
+  let divider <- mkFloatingPointDivider(div);
+
+  interface Put request;
+    method Action put(Tuple2#(F16,F16) p);
+      action
+        divider.request.put(tuple3(p.fst,p.snd,round));
       endaction
     endmethod
   endinterface
@@ -236,81 +490,82 @@ typedef struct {
   Vector#(3, F16) v;
 } Triangle deriving(Bits, FShow, Eq);
 
-module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
-  let inverse <- mkInverse3;
+// module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
+//   let inverse <- mkInverse3;
+//
+//   Fifo#(8, Tuple2#(Ray, Triangle)) fifo <- mkFifo;
+//
+//   Fifo#(2, Tuple5#(Triangle, Bool, F16, F16, F16)) buffer <- mkFifo;
+//
+//   rule step;
+//     match {.ray, .triangle} = fifo.first;
+//     fifo.deq;
+//
+//     let inv_opt <- inverse.response.get;
+//
+//     if (inv_opt matches tagged Valid .inv) begin
+//       let ret = apply3(inv[0], inv[1], inv[2], ray.origin - triangle.vertex[0]);
+//       let u = ret.x;
+//       let v = ret.y;
+//       let t = ret.z;
+//
+//       Bool found = u >= 0 && v >= 0 && u+v <= 1 && t > 0;
+//       buffer.enq(tuple5(triangle, found, u, v, t));
+//
+//
+//     end else begin
+//       buffer.enq(tuple5(triangle, False, 0, 0, 0));
+//     end
+//   endrule
+//
+//   interface Put request;
+//     method Action put(Tuple2#(Ray, Triangle) in);
+//       let edge1 = in.snd.vertex[1] - in.snd.vertex[0];
+//       let edge2 = in.snd.vertex[2] - in.snd.vertex[0];
+//
+//       inverse.request.put(vec(edge1,edge2,-in.fst.direction));
+//       fifo.enq(in);
+//     endmethod
+//   endinterface
+//
+//   interface Get response;
+//     method ActionValue#(RayHit) get;
+//       match {.triangle, .found, .u, .v, .t} = buffer.first;
+//       buffer.deq;
+//
+//       let hit = RayHit{
+//         instance_id: triangle.instance_id,
+//         texture_id: triangle.texture_id,
+//         found: found,
+//         normal: ?,
+//         t: t,
+//         u: ?,
+//         v: ?
+//       };
+//
+//       let w = 1 - (u + v);
+//
+//       hit.normal =
+//         const3(u) * triangle.normal[0] +
+//         const3(v) * triangle.normal[1] +
+//         const3(w) * triangle.normal[2];
+//
+//       hit.u =
+//         u * triangle.u[0] +
+//         v * triangle.u[1] +
+//         w * triangle.u[2];
+//
+//       hit.v =
+//         u * triangle.v[0] +
+//         v * triangle.v[1] +
+//         w * triangle.v[2];
+//
+//       return hit;
+//     endmethod
+//   endinterface
+// endmodule
 
-  Fifo#(8, Tuple2#(Ray, Triangle)) fifo <- mkFifo;
-
-  Fifo#(2, Tuple5#(Triangle, Bool, F16, F16, F16)) buffer <- mkFifo;
-
-  rule step;
-    match {.ray, .triangle} = fifo.first;
-    fifo.deq;
-
-    let inv_opt <- inverse.response.get;
-
-    if (inv_opt matches tagged Valid .inv) begin
-      let ret = apply3(inv[0], inv[1], inv[2], ray.origin - triangle.vertex[0]);
-      let u = ret.x;
-      let v = ret.y;
-      let t = ret.z;
-
-      Bool found = u >= 0 && v >= 0 && u+v <= 1 && t > 0;
-      buffer.enq(tuple5(triangle, found, u, v, t));
-
-
-    end else begin
-      buffer.enq(tuple5(triangle, False, 0, 0, 0));
-    end
-  endrule
-
-  interface Put request;
-    method Action put(Tuple2#(Ray, Triangle) in);
-      let edge1 = in.snd.vertex[1] - in.snd.vertex[0];
-      let edge2 = in.snd.vertex[2] - in.snd.vertex[0];
-
-      inverse.request.put(vec(edge1,edge2,-in.fst.direction));
-      fifo.enq(in);
-    endmethod
-  endinterface
-
-  interface Get response;
-    method ActionValue#(RayHit) get;
-      match {.triangle, .found, .u, .v, .t} = buffer.first;
-      buffer.deq;
-
-      let hit = RayHit{
-        instance_id: triangle.instance_id,
-        texture_id: triangle.texture_id,
-        found: found,
-        normal: ?,
-        t: t,
-        u: ?,
-        v: ?
-      };
-
-      let w = 1 - (u + v);
-
-      hit.normal =
-        const3(u) * triangle.normal[0] +
-        const3(v) * triangle.normal[1] +
-        const3(w) * triangle.normal[2];
-
-      hit.u =
-        u * triangle.u[0] +
-        v * triangle.u[1] +
-        w * triangle.u[2];
-
-      hit.v =
-        u * triangle.v[0] +
-        v * triangle.v[1] +
-        w * triangle.v[2];
-
-      return hit;
-    endmethod
-  endinterface
-endmodule
-
+(* synthesize *)
 module mkNormalizer(Server#(Vec3, Vec3));
   let divider0 <- mkF16Divider;
   let divider1 <- mkF16Divider;
@@ -346,62 +601,62 @@ module mkNormalizer(Server#(Vec3, Vec3));
   endinterface
 endmodule
 
-// Return the color of the sky in function of the direction of the rayon
-module mkSkyColor(Server#(Ray, Color));
-  let normalizer <- mkNormalizer;
-
-  interface Put request;
-    method Action put(Ray r);
-      normalizer.request.put(r.direction);
-    endmethod
-  endinterface
-
-  interface Get response;
-    method ActionValue#(Color) get;
-      let n <- normalizer.response.get;
-
-      let a0 = truncateLSB((0.5 * (n.y + 1)).f);
-
-      let a = rgb(a0, a0, a0);
-      Color ones = rgb(255, 255, 255);
-      return (ones - a) * ones + a * rgb(128, 178, 255);
-    endmethod
-  endinterface
-endmodule
-
-module mkComputeColor(Server#(Ray, Color));
-  let sky <- mkSkyColor;
-  let hit <- mkIntersectTriangle;
-
-  let triangle = Triangle{
-    vertex: vec(vec3(0, 0, -1), vec3(0.0, 0.5, -1), vec3(0.5, 0, -1)),
-    normal: vec(vec3(0,0,-1), vec3(0,0,-1), vec3(0,0,-1)),
-    u: vec(0, 0, 1),
-    v: vec(0, 1, 0),
-    instance_id: 0,
-    texture_id: 0,
-    center: 0
-  };
-
-  interface Put request;
-    method Action put(Ray r);
-      sky.request.put(r);
-      hit.request.put(tuple2(r, triangle));
-    endmethod
-  endinterface
-
-  interface Get response;
-    method ActionValue#(Color) get;
-      let c <- sky.response.get;
-      let h <- hit.response.get;
-
-      if (h.found) begin
-        let w = 1 - h.u.f - h.v.f;
-        return rgb(truncateLSB(h.u.f),truncateLSB(h.v.f),truncateLSB(w));
-      end else return c;
-    endmethod
-  endinterface
-endmodule
+// // Return the color of the sky in function of the direction of the rayon
+// module mkSkyColor(Server#(Ray, Color));
+//   let normalizer <- mkNormalizer;
+//
+//   interface Put request;
+//     method Action put(Ray r);
+//       normalizer.request.put(r.direction);
+//     endmethod
+//   endinterface
+//
+//   interface Get response;
+//     method ActionValue#(Color) get;
+//       let n <- normalizer.response.get;
+//
+//       let a0 = truncateLSB((0.5 * (n.y + 1)).f);
+//
+//       let a = rgb(a0, a0, a0);
+//       Color ones = rgb(255, 255, 255);
+//       return (ones - a) * ones + a * rgb(128, 178, 255);
+//     endmethod
+//   endinterface
+// endmodule
+//
+// module mkComputeColor(Server#(Ray, Color));
+//   let sky <- mkSkyColor;
+//   let hit <- mkIntersectTriangle;
+//
+//   let triangle = Triangle{
+//     vertex: vec(vec3(0, 0, -1), vec3(0.0, 0.5, -1), vec3(0.5, 0, -1)),
+//     normal: vec(vec3(0,0,-1), vec3(0,0,-1), vec3(0,0,-1)),
+//     u: vec(0, 0, 1),
+//     v: vec(0, 1, 0),
+//     instance_id: 0,
+//     texture_id: 0,
+//     center: 0
+//   };
+//
+//   interface Put request;
+//     method Action put(Ray r);
+//       sky.request.put(r);
+//       hit.request.put(tuple2(r, triangle));
+//     endmethod
+//   endinterface
+//
+//   interface Get response;
+//     method ActionValue#(Color) get;
+//       let c <- sky.response.get;
+//       let h <- hit.response.get;
+//
+//       if (h.found) begin
+//         let w = 1 - h.u.f - h.v.f;
+//         return rgb(truncateLSB(h.u.f),truncateLSB(h.v.f),truncateLSB(w));
+//       end else return c;
+//     endmethod
+//   endinterface
+// endmodule
 
 F16 focal_length = 1.0;
 
@@ -467,7 +722,7 @@ module mkSOC(Soc_Ifc);
 
   Fifo#(8, Tuple3#(Bit#(32), Bit#(32), Bool)) fifo <- mkFifo;
 
-  let sky <- mkComputeColor;
+  //let sky <- mkComputeColor;
 
   Reg#(Bit#(32)) cycle <- mkReg(0);
   Reg#(Bit#(32)) frame <- mkReg(0);
@@ -488,64 +743,106 @@ module mkSOC(Soc_Ifc);
     cycle <= cycle + 1;
   endrule
 
+  let inv3 <- mkInverse3;
   rule enq_request;
-    // x and y are too big to fit into an F16 so we divide them first by 16
-    F16 u = F16{i: truncate(x >> 4), f: {x[3:0], r1, 0}};
-    F16 v = F16{i: truncate(y >> 4), f: {y[3:0], r2, 0}};
 
-    Vec3 pixel_center =
-      pixel00_loc +
-      (vec3(u,u,u) * (pixel_delta_u * 16)) +
-      (vec3(v,v,v) * (pixel_delta_v * 16));
+    let x0 = int16ToF16(unpack(zeroExtend(random1)));
+    let x1 = int16ToF16(unpack(zeroExtend(random2)));
+    let x2 = int16ToF16(unpack(zeroExtend(random3)));
+    let x3 = int16ToF16(unpack(zeroExtend(random4)));
+    let x4 = int16ToF16(unpack(zeroExtend(random5)));
+    let x5 = int16ToF16(unpack(zeroExtend(random6)));
+    let x6 = int16ToF16(unpack(zeroExtend(random7)));
+    let x7 = int16ToF16(unpack(zeroExtend(random8)));
+    let x8 = int16ToF16(unpack(zeroExtend(random1+random8)));
 
-    fifo.enq(tuple3(x,y,count+1==ray_per_pixel));
-    sky.request.put(Ray{
-      origin: vec3(0,0,0),
-      direction: pixel_center - camera_center
-    });
+    let m = vec(vec3(x0,x1,x2),vec3(x3,x4,x5),vec3(x6,x7,x8));
+    inv3.request.put(m);
 
-    if (count+1 == ray_per_pixel) begin
-      count <= 0;
+  //  // x and y are too big to fit into an F16 so we divide them first by 16
+  //  F16 u = F16{i: truncate(x >> 4), f: {x[3:0], r1, 0}};
+  //  F16 v = F16{i: truncate(y >> 4), f: {y[3:0], r2, 0}};
 
-      if (x+1 == 320) begin
-        y <= y+1 == 240 ? 0 : y+1;
-        x <= 0;
+  //  Vec3 pixel_center =
+  //    pixel00_loc +
+  //    (vec3(u,u,u) * (pixel_delta_u * 16)) +
+  //    (vec3(v,v,v) * (pixel_delta_v * 16));
 
-        if (y+1 == 240) begin
-          $display("cycle: %d frame: %d", cycle, frame);
-          frame <= frame + 1;
-        end
-      end else
-        x <= x + 1;
-    end else begin
-      count <= count + 1;
-    end
+  //  fifo.enq(tuple3(x,y,count+1==ray_per_pixel));
+  //  sky.request.put(Ray{
+  //    origin: vec3(0,0,0),
+  //    direction: pixel_center - camera_center
+  //  });
+
+  //  if (count+1 == ray_per_pixel) begin
+  //    count <= 0;
+
+  //    if (x+1 == 320) begin
+  //      y <= y+1 == 240 ? 0 : y+1;
+  //      x <= 0;
+
+  //      if (y+1 == 240) begin
+  //        $display("cycle: %d frame: %d", cycle, frame);
+  //        frame <= frame + 1;
+  //      end
+  //    end else
+  //      x <= x + 1;
+  //  end else begin
+  //    count <= count + 1;
+  //  end
   endrule
 
   Reg#(Vector#(3,Bit#(16))) current_color <- mkReg(vec(0,0,0));
   rule deq_response;
-    match {.i, .j, .last} = fifo.first;
-    let c <- sky.response.get;
-    fifo.deq;
+    let m_opt <- inv3.response.get;
 
-    Vector#(3,Bit#(16)) color = vec(
-      current_color[0] + zeroExtend(c.r),
-      current_color[1] + zeroExtend(c.g),
-      current_color[2] + zeroExtend(c.b)
-    );
+    if (m_opt matches tagged Valid .m) begin
+      $display("");
 
-    if (last) begin
-      write_one_pixel(
-        vga, i, j,
-        (color[0] >> log_ray_per_piexel)[7:0],
-        (color[1] >> log_ray_per_piexel)[7:0],
-        (color[2] >> log_ray_per_piexel)[7:0]
-      );
+      $display(fshow(m[0].x), fshow(m[0].y), fshow(m[0].z));
 
-      current_color <= vec(0, 0, 0);
-    end else begin
-      current_color <= color;
+      $display(fshow(m[1].x), fshow(m[1].y), fshow(m[1].z));
+
+      $display(fshow(m[2].x), fshow(m[2].y), fshow(m[2].z));
+
+      let x0 = pack(f16ToInt16(m[0].x));
+      let y0 = pack(f16ToInt16(m[0].y));
+      let z0 = pack(f16ToInt16(m[0].z));
+
+      let x1 = pack(f16ToInt16(m[1].x));
+      let y1 = pack(f16ToInt16(m[1].y));
+      let z1 = pack(f16ToInt16(m[1].z));
+
+      let x2 = pack(f16ToInt16(m[2].x));
+      let y2 = pack(f16ToInt16(m[2].y));
+      let z2 = pack(f16ToInt16(m[2].z));
+      led_state <= truncate(x0) + truncate(x1) + truncate(x2) +
+        truncate(y0) + truncate(y1) + truncate(y2)
+        + truncate(z1) + truncate(z0) + truncate(z2);
     end
+
+  //  match {.i, .j, .last} = fifo.first;
+  //  let c <- sky.response.get;
+  //  fifo.deq;
+
+  //  Vector#(3,Bit#(16)) color = vec(
+  //    current_color[0] + zeroExtend(c.r),
+  //    current_color[1] + zeroExtend(c.g),
+  //    current_color[2] + zeroExtend(c.b)
+  //  );
+
+  //  if (last) begin
+  //    write_one_pixel(
+  //      vga, i, j,
+  //      (color[0] >> log_ray_per_piexel)[7:0],
+  //      (color[1] >> log_ray_per_piexel)[7:0],
+  //      (color[2] >> log_ray_per_piexel)[7:0]
+  //    );
+
+  //    current_color <= vec(0, 0, 0);
+  //  end else begin
+  //    current_color <= color;
+  //  end
   endrule
 
   method led = led_state;
