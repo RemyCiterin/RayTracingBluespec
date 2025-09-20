@@ -14,7 +14,11 @@ import BuildVector :: *;
 
 import FixedPoint :: *;
 
-typedef FixedPoint#(8,8) F16;
+typedef 8 F;
+typedef 8 I;
+typedef TAdd#(F,I) WIDTH;
+
+typedef FixedPoint#(I,F) F16;
 
 typedef struct {
   F16 x;
@@ -163,14 +167,16 @@ module mkLength(Server#(Vec3, F16));
 endmodule
 
 module mkF16Divider(Server#(Tuple2#(F16,F16), F16));
-  Server#(Tuple2#(Int#(32), Int#(16)), Tuple2#(Int#(16), Int#(16))) divider <- mkSignedDivider(16);
+  Server#(
+    Tuple2#(Int#(TMul#(2,WIDTH)), Int#(WIDTH)),
+    Tuple2#(Int#(WIDTH), Int#(WIDTH))) divider <- mkSignedDivider(16);
 
   interface Put request;
     method Action put(Tuple2#(F16,F16) p);
       action
-        function Int#(16) toUInt16(F16 x) = unpack(pack(x));
-        function Int#(32) toUInt32(F16 x) = signExtend(toUInt16(x));
-        divider.request.put(tuple2(toUInt32(p.fst) << 8, toUInt16(p.snd)));
+        function Int#(WIDTH) toUInt16(F16 x) = unpack(pack(x));
+        function Int#(TMul#(2,WIDTH)) toUInt32(F16 x) = signExtend(toUInt16(x));
+        divider.request.put(tuple2(toUInt32(p.fst) << valueOf(F), toUInt16(p.snd)));
       endaction
     endmethod
   endinterface
@@ -354,8 +360,9 @@ module mkSkyColor(Server#(Ray, Color));
     method ActionValue#(Color) get;
       let n <- normalizer.response.get;
 
-      let a0 = 0.5 * (n.y + 1);
-      let a = rgb(a0.f, a0.f, a0.f);
+      let a0 = truncateLSB((0.5 * (n.y + 1)).f);
+
+      let a = rgb(a0, a0, a0);
       Color ones = rgb(255, 255, 255);
       return (ones - a) * ones + a * rgb(128, 178, 255);
     endmethod
@@ -390,7 +397,7 @@ module mkComputeColor(Server#(Ray, Color));
 
       if (h.found) begin
         let w = 1 - h.u.f - h.v.f;
-        return rgb(h.u.f,h.v.f,w);
+        return rgb(truncateLSB(h.u.f),truncateLSB(h.v.f),truncateLSB(w));
       end else return c;
     endmethod
   endinterface
@@ -433,7 +440,7 @@ interface Soc_Ifc;
   interface VGAFabric vga_fab;
 endinterface
 
-Integer log_ray_per_piexel = 3;
+Integer log_ray_per_piexel = 0;
 Bit#(32) ray_per_pixel = 1 << log_ray_per_piexel;
 
 module mkRandomBit#(Bit#(16) start)(Bit#(1));
@@ -448,7 +455,7 @@ module mkRandomBit#(Bit#(16) start)(Bit#(1));
 endmodule
 
 (* synthesize *)
-module mkCPU(Soc_Ifc);
+module mkSOC(Soc_Ifc);
   TxUART tx_uart <- mkTxUART(217);
   RxUART rx_uart <- mkRxUART(217);
   Reg#(Bit#(8)) led_state <- mkReg(0);
@@ -483,8 +490,8 @@ module mkCPU(Soc_Ifc);
 
   rule enq_request;
     // x and y are too big to fit into an F16 so we divide them first by 16
-    F16 u = F16{i: truncate(x >> 4), f: {x[3:0], r1}};
-    F16 v = F16{i: truncate(y >> 4), f: {y[3:0], r2}};
+    F16 u = F16{i: truncate(x >> 4), f: {x[3:0], r1, 0}};
+    F16 v = F16{i: truncate(y >> 4), f: {y[3:0], r2, 0}};
 
     Vec3 pixel_center =
       pixel00_loc +
@@ -550,8 +557,8 @@ endmodule
 
 
 (* synthesize *)
-module mkCPU_SIM(Empty);
-  let cpu <- mkCPU;
+module mkSOC_SIM(Empty);
+  let cpu <- mkSOC;
 
   rule rx;
     cpu.ftdi_txd(1);

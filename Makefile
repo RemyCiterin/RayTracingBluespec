@@ -5,8 +5,8 @@ PACKAGES = ./src/:+
 SIM_FILE = ./build/mkTop_sim
 TOP = src/Soc.bsv
 
-BSIM_MODULE = mkCPU_SIM
-BUILD_MODULE = mkCPU
+BSIM_MODULE = mkSOC_SIM
+BUILD_MODULE = mkSOC
 
 LIB = \
 			$(BLUESPECDIR)/Verilog/SizedFIFO.v \
