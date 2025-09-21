@@ -202,29 +202,32 @@ module mkDot3(Server#(Tuple2#(Vec3,Vec3), F16));
   Ehr#(2, Bit#(3)) valid <- mkEhr(0);
   Ehr#(2, Bool) done <- mkEhr(False);
 
+  Fifo#(4, F16) outputs <- mkFifo;
+
   rule step if (valid[0] != 0);
-    acc[0] <= acc[0] + x1[0] + x2[0];
+    let res = acc[0] + x1[0] * x2[0];
     valid[0] <= valid[0] >> 1;
     done[0] <= valid[0] == 1;
     x1 <= rotate(x1);
     x2 <= rotate(x2);
+    acc[0] <= res;
+
+    if (valid[0] == 1)
+      outputs.enq(res);
   endrule
 
   interface Put request;
-    method Action put(p) if (valid[1] == 0 && !done[1]);
+    method Action put(p) if (valid[1] == 0);
       action
+        x1 <= vec(p.fst.x, p.fst.y, p.fst.z);
+        x2 <= vec(p.snd.x, p.snd.y, p.snd.z);
         valid[1] <= -1;
         acc[1] <= 0;
       endaction
     endmethod
   endinterface
 
-  interface Get response;
-    method ActionValue#(F16) get if (valid[0] == 0 && done[0]);
-      done[0] <= False;
-      return acc[0];
-    endmethod
-  endinterface
+  interface response = toGet(outputs);
 endmodule
 
 (* synthesize *)
@@ -234,25 +237,29 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
 
   let div <- mkF16Divider;
 
-  Fifo#(8, Tuple7#(Ray, Triangle, Bool, Vec3, Vec3, Vec3, Vec3)) fifo <- mkFifo;
+  Fifo#(8, Tuple3#(Ray, Triangle, Bool)) fifo <- mkFifo;
 
   Fifo#(2, Tuple5#(Triangle, Bool, F16, F16, F16)) buffer <- mkFifo;
 
+  let dot_prod1 <- mkDot3;
+  let dot_prod2 <- mkDot3;
+  let dot_prod3 <- mkDot3;
+
   rule step;
-    match {.ray, .triangle, .not_zero, .s, .q, .h, .edge2} = fifo.first;
+    match {.ray, .triangle, .not_zero} = fifo.first;
     fifo.deq;
 
-    if (not_zero) begin
-      let f <- div.response.get;
-      let v = f * dot3(ray.direction, q);
-      let u = f * dot3(s, h);
-      let t = f * dot3(edge2, q);
+    let v_div_f <- dot_prod1.response.get;
+    let u_div_f <- dot_prod2.response.get;
+    let t_div_f <- dot_prod3.response.get;
+    let f <- div.response.get;
 
-      Bool found = u >= 0 && v >= 0 && u+v <= 1 && t > 0;
-      buffer.enq(tuple5(triangle, found, u, v, t));
-    end else begin
-      buffer.enq(tuple5(triangle, False, 0, 0, 0));
-    end
+    let v = f * v_div_f;
+    let u = f * u_div_f;
+    let t = f * t_div_f;
+
+    Bool found = not_zero && u >= 0 && v >= 0 && u+v <= 1 && t > 0;
+    buffer.enq(tuple5(triangle, found, u, v, t));
   endrule
 
   interface Put request;
@@ -265,8 +272,13 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
       let a = dot3(edge1, h);
       let not_zero = a != 0;
 
-      if (not_zero) div.request.put(tuple2(1, a));
-      fifo.enq(tuple7(in.fst, in.snd, not_zero, s, q, h, edge2));
+      dot_prod1.request.put(tuple2(in.fst.direction, q));
+      dot_prod2.request.put(tuple2(s, h));
+      dot_prod3.request.put(tuple2(edge2, q));
+
+      div.request.put(tuple2(1, a));
+
+      fifo.enq(tuple3(in.fst, in.snd, not_zero));
     endmethod
   endinterface
 
