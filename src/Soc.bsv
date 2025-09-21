@@ -193,6 +193,52 @@ typedef struct {
 } Triangle deriving(Bits, FShow, Eq);
 
 (* synthesize *)
+module mkCross3(Server#(Tuple2#(Vec3,Vec3),Vec3));
+  Ehr#(2, Bit#(6)) xValid <- mkEhr(0);
+  Ehr#(2, Vector#(6, F16)) x1 <- mkEhr(replicate(?));
+  Ehr#(2, Vector#(6, F16)) x2 <- mkEhr(replicate(?));
+
+  Ehr#(2, Bit#(2)) yValid <- mkEhr(0);
+  Ehr#(2, Vector#(2, F16)) y <- mkEhr(replicate(?));
+
+  Ehr#(2, Bit#(3)) zValid <- mkEhr(0);
+  Ehr#(2, Vector#(3, F16)) z <- mkEhr(replicate(?));
+
+  rule enq_multiplier if (xValid[0][0] == 1 && yValid[1][0] == 0);
+    yValid[1] <= {1'b1, truncateLSB(yValid[1])};
+    y[1] <= vec(y[1][1], x1[0][0] * x2[0][0]);
+
+    xValid[0] <= xValid[0] >> 1;
+    x1[0] <= rotate(x1[0]);
+    x2[0] <= rotate(x2[0]);
+  endrule
+
+  rule enq_adder if (yValid[0] == 2'b11 && zValid[1][0] == 0);
+    zValid[1] <= {1'b1, truncateLSB(zValid[1])};
+    z[1] <= vec(z[1][1], z[1][2], y[0][0] - y[0][1]);
+    yValid[0] <= 0;
+  endrule
+
+  interface Put request;
+    method Action put(Tuple2#(Vec3,Vec3) p) if (xValid[1] == 0);
+      action
+        match {.a, .b} = p;
+        x1[1] <= vec(a.y, a.z, a.z, a.x, a.x, a.y);
+        x2[1] <= vec(b.z, b.y, b.x, b.z, b.y, b.x);
+        xValid[1] <= -1;
+      endaction
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(Vec3) get if (zValid[0] == 3'b111);
+      zValid[0] <= 0;
+      return vec3(z[0][0], z[0][1], z[0][2]);
+    endmethod
+  endinterface
+endmodule
+
+(* synthesize *)
 module mkDot3(Server#(Tuple2#(Vec3,Vec3), F16));
   Ehr#(2, F16) acc <- mkEhr(0);
 
@@ -237,7 +283,8 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
 
   let div <- mkF16Divider;
 
-  Fifo#(8, Tuple3#(Ray, Triangle, Bool)) fifo <- mkFifo;
+  Fifo#(4, Tuple2#(Ray, Triangle)) fifo <- mkFifo;
+  Fifo#(4, Bool) notZeroQ <- mkFifo;
 
   Fifo#(2, Tuple5#(Triangle, Bool, F16, F16, F16)) buffer <- mkFifo;
 
@@ -246,7 +293,8 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
   let dot_prod3 <- mkDot3;
 
   rule step;
-    match {.ray, .triangle, .not_zero} = fifo.first;
+    let not_zero <- toGet(notZeroQ).get;
+    match {.ray, .triangle} = fifo.first;
     fifo.deq;
 
     let v_div_f <- dot_prod1.response.get;
@@ -278,7 +326,8 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
 
       div.request.put(tuple2(1, a));
 
-      fifo.enq(tuple3(in.fst, in.snd, not_zero));
+      fifo.enq(tuple2(in.fst, in.snd));
+      notZeroQ.enq(not_zero);
     endmethod
   endinterface
 
@@ -381,7 +430,7 @@ endmodule
 
 (* synthesize *)
 module mkComputeColor(Server#(Ray, Color));
-  let sky <- mkSkyColor;
+  //let sky <- mkSkyColor;
   let hit <- mkIntersectTriangle;
 
   let triangle = Triangle{
@@ -396,20 +445,20 @@ module mkComputeColor(Server#(Ray, Color));
 
   interface Put request;
     method Action put(Ray r);
-      sky.request.put(r);
+      //sky.request.put(r);
       hit.request.put(tuple2(r, triangle));
     endmethod
   endinterface
 
   interface Get response;
     method ActionValue#(Color) get;
-      let c <- sky.response.get;
+      //let c <- sky.response.get;
       let h <- hit.response.get;
 
       if (h.found) begin
         let w = 1 - h.u.f - h.v.f;
         return rgb(truncateLSB(h.u.f),truncateLSB(h.v.f),truncateLSB(w));
-      end else return c;
+      end else return 255;
     endmethod
   endinterface
 endmodule
