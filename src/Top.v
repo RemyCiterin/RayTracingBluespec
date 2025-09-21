@@ -76,7 +76,7 @@ module mkTop (
   );
   `endif
 
-  mkCPU cpu(
+  mkSOC soc(
     .CLK(CLK),
     .RST_N(RST_N),
 

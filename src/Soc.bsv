@@ -8,13 +8,14 @@ import ClientServer :: *;
 import GetPut :: *;
 import Fifo :: *;
 import Real :: *;
+import Ehr :: *;
 
 import Vector :: *;
 import BuildVector :: *;
 
 import FixedPoint :: *;
 
-typedef 8 F;
+typedef 16 F;
 typedef 8 I;
 typedef TAdd#(F,I) WIDTH;
 
@@ -100,55 +101,9 @@ function Vec3 times(F16 s, Vec3 v) = vec3(s * v.x, s * v.y, s * v.z);
 
 function Vec3 at(Ray r, F16 t) = r.origin + times(t, r.direction);
 
-// A module that inverse a 3x3 matrix
-module mkInverse3(Server#(Vector#(3, Vec3), Maybe#(Vector#(3, Vec3))));
-  Fifo#(8, Bit#(1)) pathQ <- mkFifo;
-
-  Fifo#(8, Vector#(3, Vec3)) comatrixQ <- mkFifo;
-  let divider <- mkF16Divider;
-
-  interface Get response;
-    method ActionValue#(Maybe#(Vector#(3,Vec3))) get;
-      pathQ.deq;
-
-      if (pathQ.first == 1) begin
-        // The matrix is not inversible
-        return Invalid;
-      end else begin
-        comatrixQ.deq;
-        let com = comatrixQ.first;
-        let m = transpose3(com[0], com[1], com[2]);
-        let inv_det <- divider.response.get;
-
-        return Valid(vec(
-          m[0] * const3(inv_det),
-          m[1] * const3(inv_det),
-          m[2] * const3(inv_det)
-        ));
-      end
-    endmethod
-  endinterface
-
-  interface Put request;
-    method Action put(Vector#(3,Vec3) m);
-      action
-        let det = det3(m[0], m[1], m[2]);
-        let com = comatrix3(m[0], m[1], m[2]);
-
-        if (det == 0) begin
-          pathQ.enq(1);
-        end else begin
-          divider.request.put(tuple2(1, det));
-          comatrixQ.enq(com);
-          pathQ.enq(0);
-        end
-      endaction
-    endmethod
-  endinterface
-endmodule
-
+(* synthesize *)
 module mkLength(Server#(Vec3, F16));
-  let squareRooter <- mkFixedPointSquareRooter(16);
+  let squareRooter <- mkFixedPointSquareRooter(4);
 
   interface Get response;
     method ActionValue#(F16) get;
@@ -166,10 +121,11 @@ module mkLength(Server#(Vec3, F16));
   endinterface
 endmodule
 
+(* synthesize *)
 module mkF16Divider(Server#(Tuple2#(F16,F16), F16));
   Server#(
     Tuple2#(Int#(TMul#(2,WIDTH)), Int#(WIDTH)),
-    Tuple2#(Int#(WIDTH), Int#(WIDTH))) divider <- mkSignedDivider(16);
+    Tuple2#(Int#(WIDTH), Int#(WIDTH))) divider <- mkSignedDivider(4);
 
   interface Put request;
     method Action put(Tuple2#(F16,F16) p);
@@ -236,29 +192,64 @@ typedef struct {
   Vector#(3, F16) v;
 } Triangle deriving(Bits, FShow, Eq);
 
-module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
-  let inverse <- mkInverse3;
+(* synthesize *)
+module mkDot3(Server#(Tuple2#(Vec3,Vec3), F16));
+  Ehr#(2, F16) acc <- mkEhr(0);
 
-  Fifo#(8, Tuple2#(Ray, Triangle)) fifo <- mkFifo;
+  Reg#(Vector#(3, F16)) x1 <- mkReg(replicate(?));
+  Reg#(Vector#(3, F16)) x2 <- mkReg(replicate(?));
+
+  Ehr#(2, Bit#(3)) valid <- mkEhr(0);
+  Ehr#(2, Bool) done <- mkEhr(False);
+
+  rule step if (valid[0] != 0);
+    acc[0] <= acc[0] + x1[0] + x2[0];
+    valid[0] <= valid[0] >> 1;
+    done[0] <= valid[0] == 1;
+    x1 <= rotate(x1);
+    x2 <= rotate(x2);
+  endrule
+
+  interface Put request;
+    method Action put(p) if (valid[1] == 0 && !done[1]);
+      action
+        valid[1] <= -1;
+        acc[1] <= 0;
+      endaction
+    endmethod
+  endinterface
+
+  interface Get response;
+    method ActionValue#(F16) get if (valid[0] == 0 && done[0]);
+      done[0] <= False;
+      return acc[0];
+    endmethod
+  endinterface
+endmodule
+
+(* synthesize *)
+module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
+  // Rayon-triangle intersection algorithm:
+  // https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
+
+  let div <- mkF16Divider;
+
+  Fifo#(8, Tuple7#(Ray, Triangle, Bool, Vec3, Vec3, Vec3, Vec3)) fifo <- mkFifo;
 
   Fifo#(2, Tuple5#(Triangle, Bool, F16, F16, F16)) buffer <- mkFifo;
 
   rule step;
-    match {.ray, .triangle} = fifo.first;
+    match {.ray, .triangle, .not_zero, .s, .q, .h, .edge2} = fifo.first;
     fifo.deq;
 
-    let inv_opt <- inverse.response.get;
-
-    if (inv_opt matches tagged Valid .inv) begin
-      let ret = apply3(inv[0], inv[1], inv[2], ray.origin - triangle.vertex[0]);
-      let u = ret.x;
-      let v = ret.y;
-      let t = ret.z;
+    if (not_zero) begin
+      let f <- div.response.get;
+      let v = f * dot3(ray.direction, q);
+      let u = f * dot3(s, h);
+      let t = f * dot3(edge2, q);
 
       Bool found = u >= 0 && v >= 0 && u+v <= 1 && t > 0;
       buffer.enq(tuple5(triangle, found, u, v, t));
-
-
     end else begin
       buffer.enq(tuple5(triangle, False, 0, 0, 0));
     end
@@ -268,9 +259,14 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
     method Action put(Tuple2#(Ray, Triangle) in);
       let edge1 = in.snd.vertex[1] - in.snd.vertex[0];
       let edge2 = in.snd.vertex[2] - in.snd.vertex[0];
+      let s = in.fst.origin - in.snd.vertex[0];
+      let h = cross3(in.fst.direction, edge2);
+      let q = cross3(s, edge1);
+      let a = dot3(edge1, h);
+      let not_zero = a != 0;
 
-      inverse.request.put(vec(edge1,edge2,-in.fst.direction));
-      fifo.enq(in);
+      if (not_zero) div.request.put(tuple2(1, a));
+      fifo.enq(tuple7(in.fst, in.snd, not_zero, s, q, h, edge2));
     endmethod
   endinterface
 
@@ -311,6 +307,7 @@ module mkIntersectTriangle(Server#(Tuple2#(Ray, Triangle), RayHit));
   endinterface
 endmodule
 
+(* synthesize *)
 module mkNormalizer(Server#(Vec3, Vec3));
   let divider0 <- mkF16Divider;
   let divider1 <- mkF16Divider;
@@ -347,6 +344,7 @@ module mkNormalizer(Server#(Vec3, Vec3));
 endmodule
 
 // Return the color of the sky in function of the direction of the rayon
+(* synthesize *)
 module mkSkyColor(Server#(Ray, Color));
   let normalizer <- mkNormalizer;
 
@@ -369,6 +367,7 @@ module mkSkyColor(Server#(Ray, Color));
   endinterface
 endmodule
 
+(* synthesize *)
 module mkComputeColor(Server#(Ray, Color));
   let sky <- mkSkyColor;
   let hit <- mkIntersectTriangle;
@@ -440,7 +439,7 @@ interface Soc_Ifc;
   interface VGAFabric vga_fab;
 endinterface
 
-Integer log_ray_per_piexel = 0;
+Integer log_ray_per_piexel = 3;
 Bit#(32) ray_per_pixel = 1 << log_ray_per_piexel;
 
 module mkRandomBit#(Bit#(16) start)(Bit#(1));
