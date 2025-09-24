@@ -24,7 +24,19 @@ typedef struct {
   F16 y;
   F16 z;
 } Point3
-deriving(Bits, FShow, Eq);
+deriving(Bits, Eq);
+
+function Fmt fshowF16(F16 x);
+  F16 y = -x;
+  return x >= 0 ? $format("%h.%h", x.i, x.f) : $format("-%h.%h", y.i, y.f);
+endfunction
+
+instance FShow#(Point3);
+  function Fmt fshow(Point3 p);
+
+    return $format("point3(", fshowF16(p.x), ", ", fshowF16(p.y), ", ", fshowF16(p.z), ")");
+  endfunction
+endinstance
 
 function Point3 point3(F16 x, F16 y, F16 z) =
   Point3{x:x, y:y, z:z};

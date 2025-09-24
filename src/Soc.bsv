@@ -14,6 +14,8 @@ import BuildVector :: *;
 import FixedPoint :: *;
 import Geometry :: *;
 
+import Bvh :: *;
+
 // Return the color of the sky in function of the direction of the rayon
 (* synthesize *)
 module mkSkyColor(Server#(Ray, Color));
@@ -43,8 +45,10 @@ module mkComputeColor(Server#(Ray, Color));
   //let sky <- mkSkyColor;
   let hit <- mkIntersectTriangle;
 
-  let triangle = Triangle{
-    vertex: vec(vec3(0, 0, -1), vec3(0.0, 0.1, -1), vec3(0.1, 0, -1)),
+  let tree <- mkTree;
+
+  let triangle1 = Triangle{
+    vertex: vec(vec3(0, 0, -1), vec3(0.0, 0.5, -1), vec3(0.5, 0, -1)),
     normal: vec(vec3(0,0,-1), vec3(0,0,-1), vec3(0,0,-1)),
     u: vec(0, 0, 1),
     v: vec(0, 1, 0),
@@ -53,16 +57,56 @@ module mkComputeColor(Server#(Ray, Color));
     center: 0
   };
 
+  triangle1.center = (triangle1.vertex[0] + triangle1.vertex[1] + triangle1.vertex[2]) / 3;
+
+  let triangle2 = triangle1;
+  triangle2.vertex = vec(vec3(0, 0, -1), vec3(0.0, -0.5, -1), vec3(-0.5, 0, -1));
+  triangle2.center = (triangle2.vertex[0] + triangle2.vertex[1] + triangle2.vertex[2]) / 3;
+
+  let triangle3 = triangle1;
+  triangle3.vertex = vec(vec3(0, 0, -1), vec3(-0.9, 0.6, -1), vec3(-0.7, 0.7, -1));
+  triangle3.center = (triangle3.vertex[0] + triangle3.vertex[1] + triangle3.vertex[2]) / 3;
+
   Fifo#(2, Triangle) triangleQ <- mkFifo;
 
   rule enq_triangle;
-    triangleQ.enq(triangle);
+    triangleQ.enq(triangle1);
+  endrule
+
+  Reg#(Bit#(4)) state <- mkReg(0);
+
+  rule set_tri0;
+    if (state == 0) begin
+      tree.addTriangle(triangle1);
+      state <= 1;
+    end
+
+    if (state == 1) begin
+      tree.addTriangle(triangle2);
+      state <= 2;
+    end
+
+    if (state == 2) begin
+      tree.addTriangle(triangle3);
+      state <= 3;
+    end
+
+    if (state == 3) begin
+      tree.startBuild;
+      state <= 4;
+    end
+
+    if (state == 4) begin
+      tree.endBuild;
+      state <= 5;
+    end
   endrule
 
   interface Put request;
-    method Action put(Ray r);
+    method Action put(Ray r) if (state == 5);
       //sky.request.put(r);
-      hit.request.put(tuple2(r, triangleQ.first));
+      //hit.request.put(tuple2(r, triangleQ.first));
+      tree.search.request.put(r);
       triangleQ.deq;
     endmethod
   endinterface
@@ -70,7 +114,8 @@ module mkComputeColor(Server#(Ray, Color));
   interface Get response;
     method ActionValue#(Color) get;
       //let c <- sky.response.get;
-      let h <- hit.response.get;
+      //let h <- hit.response.get;
+      let h <- tree.search.response.get;
 
       if (h.found) begin
         let w = 1 - h.u.f - h.v.f;
