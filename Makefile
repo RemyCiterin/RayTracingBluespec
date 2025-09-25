@@ -13,7 +13,9 @@ LIB = \
 			$(BLUESPECDIR)/Verilog/FIFO1.v \
 			$(BLUESPECDIR)/Verilog/FIFO2.v \
 			$(BLUESPECDIR)/Verilog/FIFOL1.v \
+			$(BLUESPECDIR)/Verilog/Counter.v \
 			$(BLUESPECDIR)/Verilog/BRAM1.v \
+			$(BLUESPECDIR)/Verilog/BRAM1Load.v \
 			$(BLUESPECDIR)/Verilog/BRAM2.v \
 			$(BLUESPECDIR)/Verilog/BRAM1BE.v \
 			$(BLUESPECDIR)/Verilog/BRAM2BE.v \

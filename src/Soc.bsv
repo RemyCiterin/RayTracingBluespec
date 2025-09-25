@@ -235,7 +235,7 @@ interface Soc_Ifc;
   interface VGAFabric vga_fab;
 endinterface
 
-Integer log_ray_per_piexel = 3;
+Integer log_ray_per_piexel = 0;
 Bit#(32) ray_per_pixel = 1 << log_ray_per_piexel;
 
 module mkRandomBit#(Bit#(16) start)(Bit#(1));

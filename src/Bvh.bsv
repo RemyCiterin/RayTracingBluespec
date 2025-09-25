@@ -144,7 +144,7 @@ typedef struct {
 
 (* synthesize *)
 module mkTree(Tree);
-  Integer size = 65536;
+  Integer size = 3489;
 
   Reg#(Bit#(32)) cycle <- mkReg(0);
   rule incr_cycle; cycle <= cycle + 1; endrule
@@ -198,7 +198,7 @@ module mkTree(Tree);
           let tmin = max(vmin.x, max(vmin.y, vmin.z));
           let tmax = min(vmax.x, min(vmax.y, vmax.z));
 
-          searchFound <= tmax >= tmin && tmax > 0;
+          searchFound <= tmax >= tmin && tmax > 0 && (!searchHit.found || tmin < searchHit.t);
           triangles.put(False, nodes.read.firstTri, ?);
           searchTri <= nodes.read.firstTri;
         endaction
@@ -206,7 +206,7 @@ module mkTree(Tree);
         if (searchFound) seq
           if (nodes.read.isLeaf) seq
             while (searchTri < nodes.read.firstTri + nodes.read.length) seq
-              action searchInter.request.put(tuple2(ray, triangles.read)); endaction
+              searchInter.request.put(tuple2(ray, triangles.read));
 
               action
                 let hit <- searchInter.response.get;
@@ -224,8 +224,8 @@ module mkTree(Tree);
               endaction
             endseq
           endseq else seq
-            action searchStack.push(nodes.read.leftChild); endaction
-            action searchStack.push(nodes.read.leftChild+1); endaction
+            searchStack.push(nodes.read.leftChild);
+            searchStack.push(nodes.read.leftChild+1);
           endseq
         endseq
       endseq
@@ -254,7 +254,7 @@ module mkTree(Tree);
 
       while (buildNode < nextNode) seq
 
-        action nodes.put(False, buildNode, ?); endaction
+        nodes.put(False, buildNode, ?);
         action
           buildTri <= nodes.read.firstTri;
           buildMin <= const3(maxBound);
@@ -263,7 +263,7 @@ module mkTree(Tree);
 
         // Compute the bounds of the node
         while (buildTri < nodes.read.firstTri + nodes.read.length) seq
-          action triangles.put(False, buildTri, ?); endaction
+          triangles.put(False, buildTri, ?);
           action
             Node node = nodes.read;
             Triangle t = triangles.read;
@@ -276,7 +276,7 @@ module mkTree(Tree);
           endaction
         endseq
 
-        // Choose the biggest axis (very naive approach but it works)
+        // Choose the biggest axis and split it in two (very naive approach but it works)
         action
           Vec3 size = buildMax - buildMin;
           let axis =
@@ -296,15 +296,15 @@ module mkTree(Tree);
         endaction
 
         while (buildTri1 <= buildTri2 && nodes.read.length > 1) seq
-          action triangles.put(False, buildTri1, ?); endaction
+          triangles.put(False, buildTri1, ?);
           if (atAxis(triangles.read.center, buildAxis) <= buildSplit) seq
-            action buildTri1 <= buildTri1 + 1; endaction
+            buildTri1 <= buildTri1 + 1;
           endseq else seq
             action
               buildTmp <= triangles.read;
               triangles.put(False, buildTri2, ?);
             endaction
-            action triangles.put(True, buildTri1, triangles.read); endaction
+            triangles.put(True, buildTri1, triangles.read);
             action
               triangles.put(True, buildTri2, buildTmp);
               buildTri2 <= buildTri2 - 1;
@@ -356,7 +356,7 @@ module mkTree(Tree);
           endaction
         endseq
 
-        action nodes.put(False, buildNode, ?); endaction
+        nodes.put(False, buildNode, ?);
         action
           $display("leaf: ", nodes.read.isLeaf);
           $display(fshow(nodes.read.aa));
@@ -366,11 +366,11 @@ module mkTree(Tree);
           $display(buildAxis);
         endaction
 
-        action buildNode <= buildNode + 1; endaction
+        buildNode <= buildNode + 1;
       endseq
 
       // go to "wait for ack" state
-      action buildState <= 2; endaction
+      buildState <= 2;
 
     endseq
 
