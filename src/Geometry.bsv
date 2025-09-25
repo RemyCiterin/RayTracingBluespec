@@ -14,7 +14,7 @@ import BuildVector :: *;
 import FixedPoint :: *;
 
 typedef 16 F;
-typedef 8 I;
+typedef 16 I;
 typedef TAdd#(F,I) WIDTH;
 
 typedef FixedPoint#(I,F) F16;

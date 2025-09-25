@@ -14,8 +14,10 @@ import StmtFSM :: *;
 import RegFile :: *;
 import DReg :: *;
 
-typedef Bit#(9) NodeIdx;
-typedef Bit#(8) TriangleIdx;
+import CompletionBuffer :: *;
+
+typedef Bit#(17) NodeIdx;
+typedef Bit#(16) TriangleIdx;
 
 typedef Bit#(2) Axis;
 
@@ -50,6 +52,8 @@ typedef struct {
 
   Bool isLeaf;
   NodeIdx leftChild;
+
+  NodeIdx parent;
 
   TriangleIdx firstTri;
   TriangleIdx length;
@@ -113,10 +117,34 @@ module mkStack(Stack#(n, t)) provisos(Bits#(t, tW));
   endmethod
 endmodule
 
+module mkBRAMSafe#(BRAM_PORT#(k, v) port)(BRAM_PORT#(k, v))
+  provisos(Bits#(k, kW), Bits#(v, vW));
+
+  Reg#(v) latch <- mkReg(?);
+  Reg#(Bool) didPut <- mkDReg(False);
+
+  (* no_implicit_conditions, fire_when_enabled *)
+  rule save_value if (didPut);
+    latch <= port.read;
+  endrule
+
+  method read = didPut ? port.read : latch;
+
+  method Action put(Bool write, k key, v value);
+    port.put(write, key, value);
+    didPut <= True;
+  endmethod
+endmodule
+
+typedef struct {
+  NodeIdx current;
+
+} SearchState deriving(Bits, Eq);
+
 
 (* synthesize *)
 module mkTree(Tree);
-  Integer size = 256;
+  Integer size = 65536;
 
   Reg#(Bit#(32)) cycle <- mkReg(0);
   rule incr_cycle; cycle <= cycle + 1; endrule
@@ -128,6 +156,9 @@ module mkTree(Tree);
   Reg#(NodeIdx) nextNode <- mkReg(1);
 
   NodeIdx root = 0;
+
+  CompletionBuffer#(4, RayHit) buffer <- mkCompletionBuffer;
+  RegFile#(CBToken#(4), SearchState) states <- mkRegFileFull;
 
   Reg#(RayHit) searchHit <- mkReg(?);
   Reg#(NodeIdx) searchNode <- mkReg(?);
@@ -168,13 +199,13 @@ module mkTree(Tree);
           let tmax = min(vmax.x, min(vmax.y, vmax.z));
 
           searchFound <= tmax >= tmin && tmax > 0;
+          triangles.put(False, nodes.read.firstTri, ?);
           searchTri <= nodes.read.firstTri;
         endaction
 
         if (searchFound) seq
           if (nodes.read.isLeaf) seq
             while (searchTri < nodes.read.firstTri + nodes.read.length) seq
-              action triangles.put(False, searchTri, ?); endaction
               action searchInter.request.put(tuple2(ray, triangles.read)); endaction
 
               action
@@ -189,6 +220,7 @@ module mkTree(Tree);
                 end
 
                 searchTri <= searchTri + 1;
+                triangles.put(False, searchTri + 1, ?);
               endaction
             endseq
           endseq else seq
@@ -299,6 +331,7 @@ module mkTree(Tree);
             let lhs = Node{
               aa: const3(maxBound),
               bb: const3(minBound),
+              parent: buildNode,
               isLeaf: True,
               leftChild: ?,
               firstTri: nodes.read.firstTri,
@@ -312,6 +345,7 @@ module mkTree(Tree);
             let rhs = Node{
               aa: const3(maxBound),
               bb: const3(minBound),
+              parent: buildNode,
               isLeaf: True,
               leftChild: ?,
               firstTri: buildTri1,
@@ -361,6 +395,7 @@ module mkTree(Tree);
     let root_node = Node{
       aa: const3(maxBound),
       bb: const3(minBound),
+      parent: root,
       isLeaf: True,
       leftChild: ?,
       firstTri: 0,
