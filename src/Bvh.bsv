@@ -10,9 +10,12 @@ import ClientServer :: *;
 import BRAMCore :: *;
 
 import StmtFSM :: *;
+import Screen :: *;
 
 import RegFile :: *;
 import DReg :: *;
+
+import Vector :: *;
 
 import CompletionBuffer :: *;
 
@@ -72,7 +75,7 @@ interface Tree;
   method Action startBuild;
   method Action endBuild;
 
-  interface Server#(Ray, RayHit) search;
+  interface Server#(Ray, Color) search;
 endinterface
 
 typedef union tagged {
@@ -136,15 +139,134 @@ module mkBRAMSafe#(BRAM_PORT#(k, v) port)(BRAM_PORT#(k, v))
   endmethod
 endmodule
 
-typedef struct {
-  NodeIdx current;
+function Maybe#(F16) rayonNodeIntersection(Node node, Ray ray);
+  let t1 = (node.aa - ray.origin) * ray.inv_direction;
+  let t2 = (node.bb - ray.origin) * ray.inv_direction;
 
-} SearchState deriving(Bits, Eq);
+  let vmin = min3(t1, t2);
+  let vmax = max3(t1, t2);
 
+  let tmin = max(vmin.x, max(vmin.y, vmin.z));
+  let tmax = min(vmax.x, min(vmax.y, vmax.z));
+
+  if (tmax >= tmin && tmax > 0) return Valid(tmin);
+  else return Invalid;
+endfunction
+
+typedef 2 NumSearchUnit;
+
+module mkBvhSearch#(
+    Server#(Tuple2#(Ray, Triangle), RayHit) rayTriInter,
+    BRAM_PORT#(TriangleIdx, Triangle) trianglesRaw,
+    BRAM_PORT#(NodeIdx, Node) nodesRaw
+  ) (Server#(Ray, Color));
+
+  let triangles <- mkBRAMSafe(trianglesRaw);
+  let nodes <- mkBRAMSafe(nodesRaw);
+
+  NodeIdx root = 0;
+  Reg#(RayHit) currentHit <- mkReg(?);
+  Reg#(NodeIdx) node <- mkReg(?);
+  Reg#(TriangleIdx) triangle <- mkReg(?);
+  Reg#(Bool) found <- mkReg(?);
+
+  Stack#(6, NodeIdx) stack <- mkStack;
+
+  Fifo#(2, Ray) inputs <- mkFifo;
+  Fifo#(2, Color) outputs <- mkFifo;
+  Reg#(Ray) ray <- mkReg(?);
+
+  Reg#(Color) alpha <- mkReg(?);
+  Reg#(Color) beta <- mkReg(?);
+  Reg#(Bool) done <- mkReg(?);
+
+  Ehr#(2, Bit#(32)) remaining <- mkEhr(0);
+
+  rule update_hit;
+    remaining[0] <= remaining[0] - 1;
+
+    let hit <- rayTriInter.response.get;
+
+    if (hit.found && currentHit.found && hit.t < currentHit.t) begin
+      currentHit <= hit;
+    end
+
+    if (hit.found && !currentHit.found) begin
+      currentHit <= hit;
+    end
+  endrule
+
+  let stmt = seq
+    while (True) seq
+      action
+        inputs.deq;
+        ray <= inputs.first;
+        alpha <= rgb(255, 255, 255);
+        beta <= rgb(30, 30, 30);
+        done <= False;
+      endaction
+
+      while (!done) seq
+        action
+          currentHit.found <= False;
+          stack.push(root);
+        endaction
+
+        while (!stack.empty) seq
+          action
+            node <= stack.read;
+            nodes.put(False, stack.read, ?);
+            stack.pop;
+          endaction
+
+          action
+            let tmin = rayonNodeIntersection(nodes.read, ray);
+            found <= isJust(tmin) && (!currentHit.found || unJust(tmin) < currentHit.t);
+            triangles.put(False, nodes.read.firstTri, ?);
+            triangle <= nodes.read.firstTri;
+          endaction
+
+          if (found) seq
+            if (nodes.read.isLeaf) seq
+              while (triangle < nodes.read.firstTri + nodes.read.length) seq
+                action
+                  triangle <= triangle + 1;
+                  triangles.put(False, triangle + 1, ?);
+                  rayTriInter.request.put(tuple2(ray, triangles.read));
+                  remaining[1] <= remaining[1] + 1;
+                endaction
+              endseq
+            endseq else seq
+              stack.push(nodes.read.leftChild);
+              stack.push(nodes.read.leftChild+1);
+            endseq
+          endseq
+        endseq
+
+        while (remaining[0] != 0) noAction;
+        action
+          if (!currentHit.found) done <= True;
+          else begin
+            ray.origin <= at(ray, currentHit.t+0.01);
+            alpha <= alpha * rgb(30, 30, 0);
+            beta <= beta + alpha * rgb(150, 150, 0);
+          end
+        endaction
+      endseq
+
+      outputs.enq(beta);
+    endseq
+  endseq;
+
+  mkAutoFSM(stmt);
+
+  interface request = toPut(inputs);
+  interface response = toGet(outputs);
+endmodule
 
 (* synthesize *)
 module mkTree(Tree);
-  Integer size = 3489;
+  Integer size = 3500;
 
   Reg#(Bit#(32)) cycle <- mkReg(0);
   rule incr_cycle; cycle <= cycle + 1; endrule
@@ -157,85 +279,8 @@ module mkTree(Tree);
 
   NodeIdx root = 0;
 
-  CompletionBuffer#(4, RayHit) buffer <- mkCompletionBuffer;
-  RegFile#(CBToken#(4), SearchState) states <- mkRegFileFull;
-
-  Reg#(RayHit) searchHit <- mkReg(?);
-  Reg#(NodeIdx) searchNode <- mkReg(?);
-  Reg#(TriangleIdx) searchTri <- mkReg(?);
-  Reg#(Bool) searchFound <- mkReg(?);
-
-  let searchInter <- mkIntersectTriangle;
-  Stack#(6, NodeIdx) searchStack <- mkStack;
-
-  Fifo#(2, Ray) searchIn <- mkFifo;
-  Fifo#(2, RayHit) searchOut <- mkFifo;
-  Reg#(Ray) ray <- mkReg(?);
-
-  let searchStmt = seq
-    while (True) seq
-      action
-        searchIn.deq;
-        searchStack.push(root);
-        ray <= searchIn.first;
-        searchHit.found <= False;
-      endaction
-
-      while (!searchStack.empty) seq
-        action
-          searchNode <= searchStack.read;
-          nodes.put(False, searchStack.read, ?);
-          searchStack.pop;
-        endaction
-
-        action
-          let t1 = (nodes.read.aa - ray.origin) * ray.inv_direction;
-          let t2 = (nodes.read.bb - ray.origin) * ray.inv_direction;
-
-          let vmin = min3(t1, t2);
-          let vmax = max3(t1, t2);
-
-          let tmin = max(vmin.x, max(vmin.y, vmin.z));
-          let tmax = min(vmax.x, min(vmax.y, vmax.z));
-
-          searchFound <= tmax >= tmin && tmax > 0 && (!searchHit.found || tmin < searchHit.t);
-          triangles.put(False, nodes.read.firstTri, ?);
-          searchTri <= nodes.read.firstTri;
-        endaction
-
-        if (searchFound) seq
-          if (nodes.read.isLeaf) seq
-            while (searchTri < nodes.read.firstTri + nodes.read.length) seq
-              searchInter.request.put(tuple2(ray, triangles.read));
-
-              action
-                let hit <- searchInter.response.get;
-
-                if (hit.found && searchHit.found && hit.t < searchHit.t) begin
-                  searchHit <= hit;
-                end
-
-                if (hit.found && !searchHit.found) begin
-                  searchHit <= hit;
-                end
-
-                searchTri <= searchTri + 1;
-                triangles.put(False, searchTri + 1, ?);
-              endaction
-            endseq
-          endseq else seq
-            searchStack.push(nodes.read.leftChild);
-            searchStack.push(nodes.read.leftChild+1);
-          endseq
-        endseq
-      endseq
-
-      action
-        searchOut.enq(searchHit);
-      endaction
-    endseq
-  endseq;
-
+  let intersectServer <- mkIntersectTriangle;
+  let searchFSM <- mkBvhSearch(intersectServer, triangles, nodes);
 
   Reg#(Bit#(2)) buildState <- mkReg(0);
   Reg#(NodeIdx) buildNode <- mkReg(root);
@@ -356,16 +401,6 @@ module mkTree(Tree);
           endaction
         endseq
 
-        nodes.put(False, buildNode, ?);
-        action
-          $display("leaf: ", nodes.read.isLeaf);
-          $display(fshow(nodes.read.aa));
-          $display(fshow(nodes.read.bb));
-          $display(fshow(buildMin));
-          $display(fshow(buildMax));
-          $display(buildAxis);
-        endaction
-
         buildNode <= buildNode + 1;
       endseq
 
@@ -377,12 +412,8 @@ module mkTree(Tree);
   endseq;
 
   mkAutoFSM(buildStmt);
-  mkAutoFSM(searchStmt);
 
-  interface Server search;
-    interface response = toGet(searchOut);
-    interface request = toPut(searchIn);
-  endinterface
+  interface search = searchFSM;
 
   method Action addTriangle(Triangle triangle) if (buildState == 0);
     triangles.put(True, nextTriangle, triangle);

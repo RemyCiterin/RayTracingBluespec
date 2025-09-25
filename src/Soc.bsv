@@ -83,7 +83,7 @@ module mkComputeColor(Server#(Ray, Color));
       );
 
       action
-        let off = vec3(0,0,-5);
+        let off = vec3(0,0,-7);
 
         $display("\ntriangle: %d", triangle_index);
         $display("a: ", fshow(triangle[0] + off));
@@ -189,11 +189,12 @@ module mkComputeColor(Server#(Ray, Color));
       //let c <- sky.response.get;
       //let h <- hit.response.get;
       let h <- tree.search.response.get;
+      return h;
 
-      if (h.found) begin
-        let w = 1 - h.u.f - h.v.f;
-        return rgb(truncateLSB(h.u.f),truncateLSB(h.v.f),truncateLSB(w));
-      end else return 40;
+      //if (h.found) begin
+      //  let w = 1 - h.u.f - h.v.f;
+      //  return rgb(truncateLSB(h.u.f),truncateLSB(h.v.f),truncateLSB(w));
+      //end else return 40;
     endmethod
   endinterface
 endmodule
