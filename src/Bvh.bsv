@@ -168,7 +168,6 @@ module mkBvhSearch#(
   Reg#(RayHit) currentHit <- mkReg(?);
   Reg#(NodeIdx) node <- mkReg(?);
   Reg#(TriangleIdx) triangle <- mkReg(?);
-  Reg#(Bool) found <- mkReg(?);
 
   Stack#(6, NodeIdx) stack <- mkStack;
 
@@ -180,7 +179,27 @@ module mkBvhSearch#(
   Reg#(Color) beta <- mkReg(?);
   Reg#(Bool) done <- mkReg(?);
 
-  Ehr#(2, Bit#(32)) remaining <- mkEhr(0);
+  Ehr#(2, TriangleIdx) remaining <- mkEhr(0);
+
+  Fifo#(2, Tuple2#(TriangleIdx, TriangleIdx)) rangeQ <- mkFifo;
+  Reg#(Tuple2#(TriangleIdx, TriangleIdx)) range <- mkReg(tuple2(0,0));
+  Fifo#(1, void) triangleQ <- mkPipelineFifo;
+
+  rule process_range;
+    if (range.snd > 0) begin
+      range <= tuple2(range.fst + 1, range.snd - 1);
+      triangles.put(False, range.fst, ?);
+      triangleQ.enq(?);
+    end else begin
+      range <= rangeQ.first;
+      rangeQ.deq;
+    end
+  endrule
+
+  rule intersect_triangle;
+    rayTriInter.request.put(tuple2(ray, triangles.read));
+    triangleQ.deq;
+  endrule
 
   rule update_hit;
     remaining[0] <= remaining[0] - 1;
@@ -196,6 +215,8 @@ module mkBvhSearch#(
     end
   endrule
 
+  Reg#(Bool) explore <- mkReg(False);
+
   let stmt = seq
     while (True) seq
       action
@@ -209,47 +230,45 @@ module mkBvhSearch#(
       while (!done) seq
         action
           currentHit.found <= False;
-          stack.push(root);
+          nodes.put(False, root, ?);
+          explore <= True;
+          node <= root;
         endaction
 
-        while (!stack.empty) seq
-          action
-            node <= stack.read;
-            nodes.put(False, stack.read, ?);
-            stack.pop;
-          endaction
+        while (explore) action
+          let tmin = rayonNodeIntersection(nodes.read, ray);
+          let sat = isJust(tmin) && (!currentHit.found || unJust(tmin) < currentHit.t);
+          triangle <= nodes.read.firstTri;
 
-          action
-            let tmin = rayonNodeIntersection(nodes.read, ray);
-            found <= isJust(tmin) && (!currentHit.found || unJust(tmin) < currentHit.t);
-            triangles.put(False, nodes.read.firstTri, ?);
-            triangle <= nodes.read.firstTri;
-          endaction
+          if (sat && nodes.read.isLeaf) begin
+            remaining[1] <= remaining[1] + nodes.read.length;
+            rangeQ.enq(tuple2(nodes.read.firstTri, nodes.read.length));
+          end
 
-          if (found) seq
-            if (nodes.read.isLeaf) seq
-              while (triangle < nodes.read.firstTri + nodes.read.length) seq
-                action
-                  triangle <= triangle + 1;
-                  triangles.put(False, triangle + 1, ?);
-                  rayTriInter.request.put(tuple2(ray, triangles.read));
-                  remaining[1] <= remaining[1] + 1;
-                endaction
-              endseq
-            endseq else seq
-              stack.push(nodes.read.leftChild);
-              stack.push(nodes.read.leftChild+1);
-            endseq
-          endseq
-        endseq
+          if (sat && !nodes.read.isLeaf) begin
+            let new_node = nodes.read.leftChild+1;
+            stack.push(nodes.read.leftChild);
+            nodes.put(False, new_node, ?);
+            node <= new_node;
+          end
+
+          if (!sat || nodes.read.isLeaf) begin
+            explore <= !stack.empty;
+            if (!stack.empty) begin
+              node <= stack.read;
+              nodes.put(False, stack.read, ?);
+              stack.pop;
+            end
+          end
+        endaction
 
         while (remaining[0] != 0) noAction;
         action
           if (!currentHit.found) done <= True;
           else begin
             ray.origin <= at(ray, currentHit.t+0.01);
-            alpha <= alpha * rgb(30, 30, 0);
-            beta <= beta + alpha * rgb(150, 150, 0);
+            alpha <= alpha * rgb(100, 100, 0);
+            beta <= beta + alpha * rgb(100, 100, 0);
           end
         endaction
       endseq
@@ -267,6 +286,7 @@ endmodule
 (* synthesize *)
 module mkTree(Tree);
   Integer size = 3500;
+  //Integer size = 256;
 
   Reg#(Bit#(32)) cycle <- mkReg(0);
   rule incr_cycle; cycle <= cycle + 1; endrule

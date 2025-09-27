@@ -50,6 +50,7 @@ module mkComputeColor(Server#(Ray, Color));
   Reg#(Bit#(4)) state <- mkReg(0);
 
   BRAM_PORT#(Bit#(16), Bit#(32)) triangles <-
+    //mkBRAMCore1Load(399, False, "Mem.hex", False);
     mkBRAMCore1Load(65536, False, "Mem.hex", False);
 
   Reg#(Vector#(3, Vec3)) triangle <- mkReg(replicate(?));
@@ -57,26 +58,28 @@ module mkComputeColor(Server#(Ray, Color));
   Reg#(Bit#(16)) triangle_index <- mkReg(0);
   let divider <- mkVec3Divider;
 
+  F16 coord = unpack(truncate(triangles.read));
+
   let loadStmt = seq
     while (triangle_index != 3488) seq
       triangles.put(False, triangle_index*9, ?);
-      triangle[0].x <= unpack(triangles.read);
+      triangle[0].x <= coord;
       triangles.put(False, triangle_index*9+1, ?);
-      triangle[0].y <= unpack(triangles.read);
+      triangle[0].y <= coord;
       triangles.put(False, triangle_index*9+2, ?);
-      triangle[0].z <= unpack(triangles.read);
+      triangle[0].z <= coord;
       triangles.put(False, triangle_index*9+3, ?);
-      triangle[1].x <= unpack(triangles.read);
+      triangle[1].x <= coord;
       triangles.put(False, triangle_index*9+4, ?);
-      triangle[1].y <= unpack(triangles.read);
+      triangle[1].y <= coord;
       triangles.put(False, triangle_index*9+5, ?);
-      triangle[1].z <= unpack(triangles.read);
+      triangle[1].z <= coord;
       triangles.put(False, triangle_index*9+6, ?);
-      triangle[2].x <= unpack(triangles.read);
+      triangle[2].x <= coord;
       triangles.put(False, triangle_index*9+7, ?);
-      triangle[2].y <= unpack(triangles.read);
+      triangle[2].y <= coord;
       triangles.put(False, triangle_index*9+8, ?);
-      triangle[2].z <= unpack(triangles.read);
+      triangle[2].z <= coord;
 
       divider.request.put(
         tuple2(triangle[0] + triangle[1] + triangle[2], 3)
